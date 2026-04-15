@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        VITE_ZIMPLE_BACKEND: "${VITE_ZIMPLE_BACKEND:-http}"
+        VITE_ZIMPLE_API_BASE_URL: "${VITE_ZIMPLE_API_BASE_URL:-}"
     image: zimple-web:local
     container_name: zimple-web
     restart: unless-stopped

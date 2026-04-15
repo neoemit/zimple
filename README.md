@@ -99,6 +99,8 @@ The per-job "Override Output Directory" field is optional. If left blank, Zimple
 cp .env.example .env
 ```
 
+`docker-compose.web.yml` passes `VITE_ZIMPLE_BACKEND=http` as a build arg by default so the bundled UI talks to the real web API (not mock mode).
+
 3. Launch:
 
 ```bash
@@ -173,6 +175,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
     docker compose -f docker-compose.web.yml ps
     docker compose -f docker-compose.web.yml logs -f zimple-web
     ```
+- **Jobs complete suspiciously fast and no `.zim` appears**
+  - Rebuild web mode so frontend build args are applied: `npm run docker:web:up`.
 
 ## Security notes for web mode
 
