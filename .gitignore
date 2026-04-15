@@ -1,0 +1,55 @@
+# OS and editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.sw?
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+coverage/
+*.tsbuildinfo
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/**/*.pdb
+
+# Web API build output and local data
+web-api/dist/
+.zimple-web-data/
+
+# Docker/temp probe artifacts
+tmp-*/
+tmp-*.log
+tmp-driver-repro/
+tmp-identity-probe/
+tmp-identity-probe2/
+tmp-probe/
+tmp-probe-run.log
+tmp-svg-probe/
+tmp-zim-check/
+tmp-zout/
+
+# Runtime settings
+settings.json

@@ -1,0 +1,523 @@
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import { defaultCrawlOptions, defaultSettings } from './defaults'
+import type {
+  CancelJobResponse,
+  JobDetail,
+  JobSummary,
+  OpenOutputResponse,
+  ProgressEvent,
+  RuntimeHealth,
+  Settings,
+  StartJobRequest,
+  StartJobResponse,
+} from './types'
+
+export interface BackendClient {
+  startJob(request: StartJobRequest): Promise<StartJobResponse>
+  listJobs(): Promise<JobSummary[]>
+  getJob(jobId: string): Promise<JobDetail>
+  cancelJob(jobId: string): Promise<CancelJobResponse>
+  openOutput(jobId: string): Promise<OpenOutputResponse>
+  getRuntimeHealth(): Promise<RuntimeHealth>
+  getSettings(): Promise<Settings>
+  setSettings(settings: Settings): Promise<Settings>
+  pickOutputDirectory(): Promise<string | null>
+  onJobProgress(handler: (event: ProgressEvent) => void): Promise<() => void>
+  onJobStateChanged(handler: (event: JobSummary) => void): Promise<() => void>
+  onRuntimeHealthChanged(handler: (event: RuntimeHealth) => void): Promise<() => void>
+}
+
+type BackendMode = 'tauri' | 'http' | 'mock'
+
+const isTauriRuntime = (): boolean => {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  return '__TAURI_INTERNALS__' in window
+}
+
+const getConfiguredBackendMode = (): BackendMode | null => {
+  const configured = String(import.meta.env.VITE_ZIMPLE_BACKEND ?? '')
+    .trim()
+    .toLowerCase()
+
+  if (configured === 'tauri' || configured === 'http' || configured === 'mock') {
+    return configured
+  }
+  return null
+}
+
+const getHttpApiBaseUrl = (): string => {
+  const configured = String(import.meta.env.VITE_ZIMPLE_API_BASE_URL ?? '').trim()
+  if (configured.length > 0) {
+    return configured.replace(/\/+$/, '')
+  }
+
+  if (typeof window !== 'undefined') {
+    return window.location.origin.replace(/\/+$/, '')
+  }
+
+  return 'http://127.0.0.1:8080'
+}
+
+const startIntervalPoller = (
+  intervalMs: number,
+  poll: () => Promise<void>,
+): (() => void) => {
+  let active = true
+  let inFlight = false
+  const run = async (): Promise<void> => {
+    if (!active || inFlight) {
+      return
+    }
+    inFlight = true
+    try {
+      await poll()
+    } catch (error) {
+      console.error(error)
+    } finally {
+      inFlight = false
+    }
+  }
+
+  void run()
+  const intervalHandle = window.setInterval(() => {
+    void run()
+  }, intervalMs)
+
+  return () => {
+    active = false
+    window.clearInterval(intervalHandle)
+  }
+}
+
+class MockBackendClient implements BackendClient {
+  private readonly jobs = new Map<string, JobDetail>()
+  private readonly progressHandlers = new Set<(event: ProgressEvent) => void>()
+  private readonly stateHandlers = new Set<(event: JobSummary) => void>()
+  private readonly runtimeHandlers = new Set<(event: RuntimeHealth) => void>()
+  private settings: Settings = { ...defaultSettings }
+
+  async startJob(request: StartJobRequest): Promise<StartJobResponse> {
+    const now = new Date().toISOString()
+    const id = `mock-${Date.now()}`
+
+    const summary: JobSummary = {
+      id,
+      url: request.url,
+      state: 'queued',
+      createdAt: now,
+      attempt: 1,
+      startedAt: null,
+      finishedAt: null,
+      outputPath: null,
+      errorMessage: null,
+    }
+
+    this.jobs.set(id, {
+      summary,
+      request,
+      logs: ['[mock] Job queued'],
+      progress: [],
+    })
+
+    this.emitState(summary)
+
+    window.setTimeout(() => {
+      const job = this.jobs.get(id)
+      if (!job) {
+        return
+      }
+
+      job.summary.state = 'running'
+      job.summary.startedAt = new Date().toISOString()
+      job.logs.push('[mock] Processing started')
+      this.emitState({ ...job.summary })
+
+      const progressEvent: ProgressEvent = {
+        jobId: id,
+        stage: 'crawl',
+        message: 'Mock crawl is running. Launch with Tauri to run real Docker jobs.',
+        timestamp: new Date().toISOString(),
+        percent: 50,
+      }
+
+      job.progress.push(progressEvent)
+      this.emitProgress(progressEvent)
+
+      window.setTimeout(() => {
+        const target = this.jobs.get(id)
+        if (!target || target.summary.state === 'cancelled') {
+          return
+        }
+
+        target.summary.state = 'succeeded'
+        target.summary.finishedAt = new Date().toISOString()
+        target.summary.outputPath = `${this.settings.outputDirectory ?? '/tmp'}/mock-output.zim`
+        target.logs.push('[mock] Completed')
+
+        this.emitProgress({
+          jobId: id,
+          stage: 'done',
+          message: 'Mock output generated',
+          timestamp: new Date().toISOString(),
+          percent: 100,
+        })
+        this.emitState({ ...target.summary })
+      }, 1200)
+    }, 600)
+
+    return { jobId: id }
+  }
+
+  async listJobs(): Promise<JobSummary[]> {
+    return Array.from(this.jobs.values())
+      .map((job) => ({ ...job.summary }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }
+
+  async getJob(jobId: string): Promise<JobDetail> {
+    const job = this.jobs.get(jobId)
+    if (!job) {
+      throw new Error(`Job not found: ${jobId}`)
+    }
+
+    return {
+      summary: { ...job.summary },
+      request: { ...job.request },
+      logs: [...job.logs],
+      progress: [...job.progress],
+    }
+  }
+
+  async cancelJob(jobId: string): Promise<CancelJobResponse> {
+    const job = this.jobs.get(jobId)
+    if (!job) {
+      return { cancelled: false }
+    }
+
+    job.summary.state = 'cancelled'
+    job.summary.finishedAt = new Date().toISOString()
+    job.logs.push('[mock] Cancelled by user')
+    this.emitState({ ...job.summary })
+    return { cancelled: true }
+  }
+
+  async openOutput(jobId: string): Promise<OpenOutputResponse> {
+    const job = this.jobs.get(jobId)
+    return { opened: Boolean(job?.summary.outputPath) }
+  }
+
+  async getRuntimeHealth(): Promise<RuntimeHealth> {
+    const health: RuntimeHealth = {
+      dockerInstalled: false,
+      dockerResponsive: false,
+      zimitImagePresent: false,
+      ready: false,
+      message: 'Running in browser mode. Use `npm run dev:tauri` for real jobs.',
+    }
+
+    this.emitRuntime(health)
+    return health
+  }
+
+  async getSettings(): Promise<Settings> {
+    return { ...this.settings }
+  }
+
+  async setSettings(settings: Settings): Promise<Settings> {
+    this.settings = { ...settings }
+    return { ...this.settings }
+  }
+
+  async pickOutputDirectory(): Promise<string | null> {
+    return this.settings.outputDirectory ?? null
+  }
+
+  async onJobProgress(handler: (event: ProgressEvent) => void): Promise<() => void> {
+    this.progressHandlers.add(handler)
+    return () => this.progressHandlers.delete(handler)
+  }
+
+  async onJobStateChanged(handler: (event: JobSummary) => void): Promise<() => void> {
+    this.stateHandlers.add(handler)
+    return () => this.stateHandlers.delete(handler)
+  }
+
+  async onRuntimeHealthChanged(handler: (event: RuntimeHealth) => void): Promise<() => void> {
+    this.runtimeHandlers.add(handler)
+    return () => this.runtimeHandlers.delete(handler)
+  }
+
+  private emitProgress(event: ProgressEvent): void {
+    for (const handler of this.progressHandlers) {
+      handler(event)
+    }
+  }
+
+  private emitState(event: JobSummary): void {
+    for (const handler of this.stateHandlers) {
+      handler(event)
+    }
+  }
+
+  private emitRuntime(event: RuntimeHealth): void {
+    for (const handler of this.runtimeHandlers) {
+      handler(event)
+    }
+  }
+}
+
+class TauriBackendClient implements BackendClient {
+  async startJob(request: StartJobRequest): Promise<StartJobResponse> {
+    return invoke<StartJobResponse>('start_job', { request })
+  }
+
+  async listJobs(): Promise<JobSummary[]> {
+    return invoke<JobSummary[]>('list_jobs')
+  }
+
+  async getJob(jobId: string): Promise<JobDetail> {
+    return invoke<JobDetail>('get_job', { jobId })
+  }
+
+  async cancelJob(jobId: string): Promise<CancelJobResponse> {
+    return invoke<CancelJobResponse>('cancel_job', { jobId })
+  }
+
+  async openOutput(jobId: string): Promise<OpenOutputResponse> {
+    return invoke<OpenOutputResponse>('open_output', { jobId })
+  }
+
+  async getRuntimeHealth(): Promise<RuntimeHealth> {
+    return invoke<RuntimeHealth>('get_runtime_health')
+  }
+
+  async getSettings(): Promise<Settings> {
+    return invoke<Settings>('get_settings')
+  }
+
+  async setSettings(settings: Settings): Promise<Settings> {
+    return invoke<Settings>('set_settings', { settings })
+  }
+
+  async pickOutputDirectory(): Promise<string | null> {
+    return invoke<string | null>('pick_output_directory')
+  }
+
+  async onJobProgress(handler: (event: ProgressEvent) => void): Promise<() => void> {
+    const unlisten = await listen<ProgressEvent>('job:progress', (event) => {
+      handler(event.payload)
+    })
+
+    return unlisten
+  }
+
+  async onJobStateChanged(handler: (event: JobSummary) => void): Promise<() => void> {
+    const unlisten = await listen<JobSummary>('job:state_changed', (event) => {
+      handler(event.payload)
+    })
+
+    return unlisten
+  }
+
+  async onRuntimeHealthChanged(handler: (event: RuntimeHealth) => void): Promise<() => void> {
+    const unlisten = await listen<RuntimeHealth>('runtime:health_changed', (event) => {
+      handler(event.payload)
+    })
+
+    return unlisten
+  }
+}
+
+export class HttpBackendClient implements BackendClient {
+  private readonly baseUrl: string
+
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl
+  }
+
+  async startJob(request: StartJobRequest): Promise<StartJobResponse> {
+    return this.request<StartJobResponse>('/api/jobs', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    })
+  }
+
+  async listJobs(): Promise<JobSummary[]> {
+    return this.request<JobSummary[]>('/api/jobs')
+  }
+
+  async getJob(jobId: string): Promise<JobDetail> {
+    return this.request<JobDetail>(`/api/jobs/${encodeURIComponent(jobId)}`)
+  }
+
+  async cancelJob(jobId: string): Promise<CancelJobResponse> {
+    return this.request<CancelJobResponse>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST',
+    })
+  }
+
+  async openOutput(jobId: string): Promise<OpenOutputResponse> {
+    if (typeof window === 'undefined') {
+      return { opened: false }
+    }
+
+    const outputUrl = `${this.baseUrl}/api/jobs/${encodeURIComponent(jobId)}/output`
+    const popup = window.open(outputUrl, '_blank', 'noopener,noreferrer')
+    return { opened: popup !== null }
+  }
+
+  async getRuntimeHealth(): Promise<RuntimeHealth> {
+    return this.request<RuntimeHealth>('/api/runtime-health')
+  }
+
+  async getSettings(): Promise<Settings> {
+    return this.request<Settings>('/api/settings')
+  }
+
+  async setSettings(settings: Settings): Promise<Settings> {
+    return this.request<Settings>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    })
+  }
+
+  async pickOutputDirectory(): Promise<string | null> {
+    const settings = await this.getSettings()
+    return settings.outputDirectory ?? null
+  }
+
+  async onJobProgress(handler: (event: ProgressEvent) => void): Promise<() => void> {
+    const lastCounts = new Map<string, number>()
+    return startIntervalPoller(2000, async () => {
+      const jobs = await this.listJobs()
+      const details = await Promise.all(
+        jobs.map(async (job) => ({
+          jobId: job.id,
+          detail: await this.getJob(job.id),
+        })),
+      )
+
+      const seen = new Set<string>()
+      for (const { jobId, detail } of details) {
+        seen.add(jobId)
+        const previousCount = lastCounts.get(jobId) ?? 0
+        const nextCount = detail.progress.length
+        if (nextCount > previousCount) {
+          for (const event of detail.progress.slice(previousCount)) {
+            handler(event)
+          }
+        }
+        lastCounts.set(jobId, nextCount)
+      }
+
+      for (const knownId of lastCounts.keys()) {
+        if (!seen.has(knownId)) {
+          lastCounts.delete(knownId)
+        }
+      }
+    })
+  }
+
+  async onJobStateChanged(handler: (event: JobSummary) => void): Promise<() => void> {
+    const fingerprints = new Map<string, string>()
+
+    return startIntervalPoller(2000, async () => {
+      const jobs = await this.listJobs()
+      const seen = new Set<string>()
+
+      for (const job of jobs) {
+        seen.add(job.id)
+        const fingerprint = [
+          job.state,
+          job.attempt,
+          job.startedAt ?? '',
+          job.finishedAt ?? '',
+          job.outputPath ?? '',
+          job.errorMessage ?? '',
+        ].join('|')
+        if (fingerprints.get(job.id) !== fingerprint) {
+          fingerprints.set(job.id, fingerprint)
+          handler(job)
+        }
+      }
+
+      for (const knownId of fingerprints.keys()) {
+        if (!seen.has(knownId)) {
+          fingerprints.delete(knownId)
+        }
+      }
+    })
+  }
+
+  async onRuntimeHealthChanged(handler: (event: RuntimeHealth) => void): Promise<() => void> {
+    return startIntervalPoller(5000, async () => {
+      handler(await this.getRuntimeHealth())
+    })
+  }
+
+  private async request<T>(pathSuffix: string, init?: RequestInit): Promise<T> {
+    const headers = new Headers(init?.headers)
+    if (!headers.has('Content-Type') && init?.body) {
+      headers.set('Content-Type', 'application/json')
+    }
+
+    const response = await fetch(`${this.baseUrl}${pathSuffix}`, {
+      ...init,
+      headers,
+    })
+
+    const contentType = response.headers.get('content-type') || ''
+    const payload = contentType.includes('application/json')
+      ? ((await response.json()) as Record<string, unknown>)
+      : {}
+
+    if (!response.ok) {
+      const message =
+        typeof payload.message === 'string'
+          ? payload.message
+          : `Request failed with status ${response.status}.`
+      throw new Error(message)
+    }
+
+    return payload as T
+  }
+}
+
+let backendSingleton: BackendClient | null = null
+
+export const getBackendClient = (): BackendClient => {
+  if (backendSingleton) {
+    return backendSingleton
+  }
+
+  const configuredMode = getConfiguredBackendMode()
+  if (configuredMode === 'http') {
+    backendSingleton = new HttpBackendClient(getHttpApiBaseUrl())
+    return backendSingleton
+  }
+
+  if (configuredMode === 'mock') {
+    backendSingleton = new MockBackendClient()
+    return backendSingleton
+  }
+
+  if (isTauriRuntime()) {
+    backendSingleton = new TauriBackendClient()
+    return backendSingleton
+  }
+
+  backendSingleton = new MockBackendClient()
+
+  return backendSingleton
+}
+
+export const createDefaultStartJobRequest = (): StartJobRequest => ({
+  url: '',
+  outputFilename: null,
+  outputDirectory: null,
+  crawl: structuredClone(defaultCrawlOptions),
+})

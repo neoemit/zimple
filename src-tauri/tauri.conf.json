@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Zimple",
+  "version": "0.1.0",
+  "identifier": "com.zimple.app",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --host --port 1420",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Zimple",
+        "width": 1240,
+        "height": 860,
+        "minWidth": 980,
+        "minHeight": 720,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Productivity"
+  }
+}

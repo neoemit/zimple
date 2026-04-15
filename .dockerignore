@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+dist
+coverage
+src-tauri/target
+web-api/dist
+tmp-*
+*.log
+.DS_Store
+.zimple-web-data

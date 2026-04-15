@@ -1,0 +1,32 @@
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM deps AS build
+WORKDIR /app
+COPY . .
+RUN npm run build
+RUN npm run build:web:api
+
+FROM node:22-alpine AS runtime
+WORKDIR /app
+
+RUN apk add --no-cache docker-cli
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/web-api/dist ./web-api/dist
+
+EXPOSE 8080
+
+ENV NODE_ENV=production \
+  ZIMPLE_BIND_ADDRESS=127.0.0.1 \
+  ZIMPLE_PORT=8080 \
+  ZIMPLE_OUTPUT_DIR=/tmp/zimple-web-output \
+  ZIMPLE_DATA_DIR=/data \
+  ZIMPLE_DOCKER_SOCKET=/var/run/docker.sock
+
+CMD ["node", "web-api/dist/index.js"]
