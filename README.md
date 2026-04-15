@@ -21,7 +21,7 @@ The project now supports two runtime modes:
 - Node/Fastify API service (`web-api/src/`)
 - Docker `ghcr.io/openzim/zimit` execution from Node runtime
 - Single worker + FIFO queue + retries/backoff + cancellation
-- Local-only bind (`127.0.0.1`) by default
+- Container binds internally to `0.0.0.0`; compose publishes localhost-only (`127.0.0.1`) by default
 
 ## Core behavior and policy
 
@@ -127,7 +127,7 @@ The API container invokes `docker run` via the host Docker socket. The output di
 
 - `ZIMPLE_OUTPUT_DIR`: absolute host path for `.zim` output
 - `ZIMPLE_DOCKER_SOCKET`: Docker socket path (default `/var/run/docker.sock`)
-- `ZIMPLE_BIND_ADDRESS`: bind address (default `127.0.0.1`)
+- `ZIMPLE_BIND_ADDRESS`: API bind address inside container/process (default `0.0.0.0` for Docker web mode)
 - `ZIMPLE_PORT`: API/UI port (default `8080`)
 - `ZIMPLE_DATA_DIR`: settings persistence directory (default `/data`)
 - `ZIMPLE_ZIMIT_IMAGE`: zimit image (default `ghcr.io/openzim/zimit`)

@@ -9,7 +9,7 @@ services:
     ports:
       - "127.0.0.1:${ZIMPLE_PORT:-8080}:8080"
     environment:
-      ZIMPLE_BIND_ADDRESS: "127.0.0.1"
+      ZIMPLE_BIND_ADDRESS: "0.0.0.0"
       ZIMPLE_PORT: "8080"
       ZIMPLE_OUTPUT_DIR: "${ZIMPLE_OUTPUT_DIR:-/tmp/zimple-web-output}"
       ZIMPLE_DATA_DIR: "/data"
