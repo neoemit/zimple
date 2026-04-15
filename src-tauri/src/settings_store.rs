@@ -27,6 +27,11 @@ pub async fn load_settings(app: &AppHandle) -> Result<Settings, String> {
     let mut settings = serde_json::from_str::<Settings>(&data)
         .map_err(|err| format!("Unable to parse settings file {}: {err}", path.display()))?;
 
+    settings.output_directory = settings
+        .output_directory
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty());
+
     if settings.output_directory.is_none() {
         settings.output_directory = crate::models::default_downloads_directory();
     }

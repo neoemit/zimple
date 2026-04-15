@@ -26,8 +26,12 @@ const settings: Settings = {
   autoOpenOnSuccess: true,
 }
 
-const makeBackend = (): BackendClient => {
+const makeBackend = (overrides?: Partial<Settings>): BackendClient => {
   const jobs: JobSummary[] = []
+  const effectiveSettings: Settings = {
+    ...settings,
+    ...overrides,
+  }
 
   return {
     startJob: vi.fn(async (request: StartJobRequest): Promise<StartJobResponse> => {
@@ -78,9 +82,9 @@ const makeBackend = (): BackendClient => {
     cancelJob: vi.fn(async () => ({ cancelled: true })),
     openOutput: vi.fn(async () => ({ opened: true })),
     getRuntimeHealth: vi.fn(async () => runtimeHealth),
-    getSettings: vi.fn(async () => settings),
+    getSettings: vi.fn(async () => effectiveSettings),
     setSettings: vi.fn(async (nextSettings: Settings) => nextSettings),
-    pickOutputDirectory: vi.fn(async () => settings.outputDirectory ?? null),
+    pickOutputDirectory: vi.fn(async () => effectiveSettings.outputDirectory ?? null),
     onJobProgress: vi.fn(async () => () => {}),
     onJobStateChanged: vi.fn(async () => () => {}),
     onRuntimeHealthChanged: vi.fn(async () => () => {}),
@@ -121,6 +125,28 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(screen.queryByLabelText('advanced-options')).not.toBeInTheDocument()
+    })
+  })
+
+  it('allows queueing when override and default output directories are blank in the UI', async () => {
+    const backend = makeBackend({ outputDirectory: null })
+
+    render(<App backend={backend} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Job' }))
+
+    const urlInput = await screen.findByLabelText('website-url')
+    fireEvent.change(urlInput, { target: { value: 'https://example.com' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start Processing' }))
+
+    await waitFor(() => {
+      expect(backend.startJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: 'https://example.com',
+          outputDirectory: null,
+        }),
+      )
     })
   })
 })

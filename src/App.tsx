@@ -498,19 +498,10 @@ function App({ backend = getBackendClient() }: AppProps) {
     setErrorMessage(null)
     setInfoMessage(null)
 
-    const outputDirectory =
-      request.outputDirectory?.trim() || settings.outputDirectory?.trim()
-
-    if (!outputDirectory) {
-      setErrorMessage(
-        'Choose an output directory before starting a job so ZIM files have a valid destination.',
-      )
-      return
-    }
-
     setSubmitting(true)
 
     try {
+      const outputDirectory = request.outputDirectory?.trim() || null
       const response = await backend.startJob({
         ...request,
         outputDirectory,
@@ -876,7 +867,7 @@ function App({ backend = getBackendClient() }: AppProps) {
                     <input
                       aria-label="output-directory-override"
                       type="text"
-                      placeholder={settings.outputDirectory ?? '/path/to/output'}
+                      placeholder={settings.outputDirectory ?? 'Uses default output directory'}
                       value={request.outputDirectory ?? ''}
                       onChange={(event) =>
                         setRequest((current) => ({

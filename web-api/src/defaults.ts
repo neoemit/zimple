@@ -1,3 +1,4 @@
+import path from 'node:path'
 import type { CrawlOptions, Settings, WebApiConfig } from './types.js'
 
 export const defaultCrawlOptions: CrawlOptions = {
@@ -19,6 +20,8 @@ export const defaultSettings = (outputDirectory: string): Settings => ({
   outputDirectory,
   autoOpenOnSuccess: true,
 })
+
+const defaultWebOutputDirectory = (): string => path.resolve(process.cwd(), 'bind')
 
 const envInt = (name: string, fallback: number): number => {
   const raw = process.env[name]
@@ -45,7 +48,7 @@ const toAbsolutePath = (value: string, label: string): string => {
 
 export const readConfigFromEnv = (): WebApiConfig => {
   const outputDirectory = toAbsolutePath(
-    envString('ZIMPLE_OUTPUT_DIR', '/tmp/zimple-web-output'),
+    envString('ZIMPLE_OUTPUT_DIR', defaultWebOutputDirectory()),
     'ZIMPLE_OUTPUT_DIR',
   )
   const dataDirectory = toAbsolutePath(

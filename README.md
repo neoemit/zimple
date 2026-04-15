@@ -28,6 +28,9 @@ The project now supports two runtime modes:
 - Public `http://` and `https://` URLs only
 - Queue with one active job at a time
 - Job states: `queued`, `running`, `succeeded`, `failed`, `cancelled`
+- Output defaults:
+  - Desktop mode: user `Downloads` folder
+  - Web mode (Docker compose): `/Users/thomas/Repos/zimple/bind`
 - Default crawl limits:
   - Max pages: `2000`
   - Max depth: `5`
@@ -87,6 +90,8 @@ npm run dev
 ```bash
 /Users/thomas/Repos/zimple/bind
 ```
+
+The per-job "Override Output Directory" field is optional. If left blank, Zimple uses the configured default output directory for the active runtime mode.
 
 2. Optionally define environment variables in your shell or `.env` (for a different host folder):
 

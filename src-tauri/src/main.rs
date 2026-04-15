@@ -27,12 +27,20 @@ async fn start_job(
 
     let settings = job_manager::get_settings(state.inner.clone()).await;
 
-    let output_directory = normalized_request
+    let requested_output_directory = normalized_request
         .output_directory
         .clone()
-        .or(settings.output_directory)
         .map(|path| path.trim().to_string())
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.is_empty());
+
+    let settings_output_directory = settings
+        .output_directory
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty());
+
+    let output_directory = requested_output_directory
+        .or(settings_output_directory)
+        .or_else(models::default_downloads_directory)
         .ok_or_else(|| {
             "No output directory configured. Set one in Advanced Settings before starting jobs."
                 .to_string()
