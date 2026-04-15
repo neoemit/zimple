@@ -82,13 +82,13 @@ npm run dev
 
 ## Run as a local web app via Docker
 
-1. Pick an absolute host output directory (required), for example:
+1. By default, `.zim` files are written to the project bind folder:
 
 ```bash
-mkdir -p /tmp/zimple-web-output
+/Users/thomas/Repos/zimple/bind
 ```
 
-2. Optionally define environment variables in your shell or `.env`:
+2. Optionally define environment variables in your shell or `.env` (for a different host folder):
 
 ```bash
 cp .env.example .env
@@ -125,7 +125,7 @@ The API container invokes `docker run` via the host Docker socket. The output di
 
 ### Web API env
 
-- `ZIMPLE_OUTPUT_DIR`: absolute host path for `.zim` output
+- `ZIMPLE_OUTPUT_DIR`: absolute host path for `.zim` output (default `/Users/thomas/Repos/zimple/bind`)
 - `ZIMPLE_DOCKER_SOCKET`: Docker socket path (default `/var/run/docker.sock`)
 - `ZIMPLE_BIND_ADDRESS`: API bind address inside container/process (default `0.0.0.0` for Docker web mode)
 - `ZIMPLE_PORT`: API/UI port (default `8080`)

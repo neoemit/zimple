@@ -51,5 +51,9 @@ tmp-svg-probe/
 tmp-zim-check/
 tmp-zout/
 
+# Web-mode capture output
+bind/*
+!bind/.gitkeep
+
 # Runtime settings
 settings.json
