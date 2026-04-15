@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import {
+  Plus, Settings as SettingsIcon, FolderOpen, PlayCircle, XCircle,
+  X, CheckCircle, Loader2
+} from 'lucide-react'
 import './App.css'
 import {
   createDefaultStartJobRequest,
@@ -645,7 +649,7 @@ function App({ backend = getBackendClient() }: AppProps) {
         </header>
 
         <section className="panel status-strip" aria-label="runtime-status">
-          <div>
+          <div className="status-item">
             <p className="label">Runtime</p>
             <p>
               {runtimeHealth?.ready
@@ -653,11 +657,11 @@ function App({ backend = getBackendClient() }: AppProps) {
                 : runtimeHealth?.message ?? 'Checking Docker + zimit runtime...'}
             </p>
           </div>
-          <div>
+          <div className="status-item">
             <p className="label">Active</p>
             <p>{activeJobCount}</p>
           </div>
-          <div>
+          <div className="status-item">
             <p className="label">Queued</p>
             <p>{queuedJobCount}</p>
           </div>
@@ -670,7 +674,7 @@ function App({ backend = getBackendClient() }: AppProps) {
             <h2>Job Queue</h2>
             <div className="section-actions">
               <button type="button" onClick={() => setShowCreateJob(true)}>
-                Add Job
+                <Plus size={18} /> Add Job
               </button>
             </div>
           </div>
@@ -681,7 +685,7 @@ function App({ backend = getBackendClient() }: AppProps) {
                 <li className="empty empty-block">
                   <p>No jobs yet.</p>
                   <button type="button" onClick={() => setShowCreateJob(true)}>
-                    Add Your First Job
+                    <Plus size={18} /> Add Your First Job
                   </button>
                 </li>
               )}
@@ -703,12 +707,12 @@ function App({ backend = getBackendClient() }: AppProps) {
                         className="ghost"
                         onClick={() => void onCancelJob(job.id)}
                       >
-                        Cancel
+                        <XCircle size={16} /> Cancel
                       </button>
                     )}
                     {job.state === 'succeeded' && (
                       <button type="button" onClick={() => void onOpenOutput(job.id)}>
-                        Open Output
+                        <FolderOpen size={16} /> Open Output
                       </button>
                     )}
                   </div>
@@ -827,7 +831,7 @@ function App({ backend = getBackendClient() }: AppProps) {
                 className="ghost"
                 onClick={() => setShowCreateJob(false)}
               >
-                Close
+                <X size={18} /> Close
               </button>
             </div>
 
@@ -885,17 +889,21 @@ function App({ backend = getBackendClient() }: AppProps) {
                     className="ghost"
                     onClick={() => setShowCreateJob(false)}
                   >
-                    Cancel
+                    <XCircle size={18} /> Cancel
                   </button>
                   <button
                     type="button"
                     className="ghost"
                     onClick={() => setShowAdvanced(true)}
                   >
-                    Show Advanced
+                    <SettingsIcon size={18} /> Show Advanced
                   </button>
                   <button type="submit" disabled={submitting}>
-                    {submitting ? 'Queueing...' : 'Start Processing'}
+                    {submitting ? (
+                      <><Loader2 size={18} className="spin" /> Queueing...</>
+                    ) : (
+                      <><PlayCircle size={18} /> Start Processing</>
+                    )}
                   </button>
                 </div>
               </form>
@@ -924,7 +932,7 @@ function App({ backend = getBackendClient() }: AppProps) {
                 className="ghost"
                 onClick={() => setShowAdvanced(false)}
               >
-                Hide Advanced
+                <SettingsIcon size={18} /> Hide Advanced
               </button>
             </div>
 
@@ -1082,14 +1090,18 @@ function App({ backend = getBackendClient() }: AppProps) {
                         className="ghost"
                         onClick={() => void onBrowseDirectory()}
                       >
-                        Browse
+                        <FolderOpen size={18} /> Browse
                       </button>
                       <button
                         type="button"
                         disabled={savingSettings}
                         onClick={() => void onSaveSettings()}
                       >
-                        {savingSettings ? 'Saving...' : 'Save'}
+                        {savingSettings ? (
+                          <><Loader2 size={18} className="spin" /> Saving...</>
+                        ) : (
+                          <><CheckCircle size={18} /> Save</>
+                        )}
                       </button>
                     </div>
                   </div>
@@ -1150,7 +1162,7 @@ function App({ backend = getBackendClient() }: AppProps) {
                   }
                 }}
               >
-                Dismiss
+                <X size={16} />
               </button>
             </section>
           ))}
