@@ -166,13 +166,19 @@ describe('JobManager queue behavior', () => {
 
     const first = await manager.startJob(makeRequest(outputDir, 'https://example.com/one'))
     const second = await manager.startJob(makeRequest(outputDir, 'https://example.com/two'))
+    await waitForState(manager, first.jobId, 'running')
 
     const cancelResponse = await manager.cancelJob(second.jobId)
     expect(cancelResponse.cancelled).toBe(true)
 
-    if (typeof releaseFirstJob === 'function') {
-      releaseFirstJob()
+    const releaseDeadline = Date.now() + 1000
+    while (typeof releaseFirstJob !== 'function' && Date.now() < releaseDeadline) {
+      await waitFor(10)
     }
+    if (typeof releaseFirstJob !== 'function') {
+      throw new Error('Expected first job gate release function to be initialized')
+    }
+    releaseFirstJob()
 
     expect(await waitForTerminalState(manager, first.jobId)).toBe('succeeded')
     expect(await waitForTerminalState(manager, second.jobId)).toBe('cancelled')

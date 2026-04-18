@@ -16,6 +16,18 @@ const fromPatternText = (value: string): string[] =>
     .map((line) => line.trim())
     .filter(Boolean)
 
+const includePatternPlaceholder = [
+  '^https?://example\\.com/docs/.*',
+  '^https?://example\\.com/blog/(guides|tutorials)/.*',
+].join('\n')
+
+const excludePatternPlaceholder = [
+  '^https?://example\\.com/(admin|login)',
+  '[?&](utm_|sessionId=)',
+].join('\n')
+
+const scopePatternDocsUrl = 'https://crawler.docs.browsertrix.com/user-guide/crawl-scope/'
+
 function CaptureSettingsModal({
   request,
   setRequest,
@@ -168,6 +180,7 @@ function CaptureSettingsModal({
                 <label>
                   Include Patterns (one per line)
                   <textarea
+                    placeholder={includePatternPlaceholder}
                     value={toPatternText(request.crawl.includePatterns)}
                     onChange={(event) =>
                       updateCrawlOptions({
@@ -181,6 +194,7 @@ function CaptureSettingsModal({
                 <label>
                   Exclude Patterns (one per line)
                   <textarea
+                    placeholder={excludePatternPlaceholder}
                     value={toPatternText(request.crawl.excludePatterns)}
                     onChange={(event) =>
                       updateCrawlOptions({
@@ -191,6 +205,15 @@ function CaptureSettingsModal({
                   />
                 </label>
               </div>
+
+              <p className="scope-pattern-help">
+                Patterns use regex syntax.
+                {' '}
+                <a href={scopePatternDocsUrl} target="_blank" rel="noreferrer">
+                  Learn include/exclude pattern rules
+                </a>
+                .
+              </p>
             </div>
           </details>
         </div>

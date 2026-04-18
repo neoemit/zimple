@@ -61,8 +61,9 @@ describe('runtime helpers', () => {
     expect(args).toContain('--saveState')
     expect(args).toContain('partial')
     expect(args).toContain('--saveStateInterval')
-    expect(args).toContain('60')
+    expect(args).toContain('15')
     expect(args).toContain('--keep')
+    expect(args).toContain('--robots')
     const hardLimitFlagIndex = args.indexOf('--timeHardLimit')
     expect(hardLimitFlagIndex).toBeGreaterThan(-1)
     expect(args[hardLimitFlagIndex + 1]).toBe(

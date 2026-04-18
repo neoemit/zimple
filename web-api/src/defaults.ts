@@ -2,7 +2,7 @@ import path from 'node:path'
 import type { CrawlOptions, Settings, WebApiConfig } from './types.js'
 
 export const defaultCrawlOptions: CrawlOptions = {
-  respectRobots: true,
+  respectRobots: false,
   workers: 4,
   includePatterns: [],
   excludePatterns: [],

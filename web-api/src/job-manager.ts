@@ -10,6 +10,7 @@ import {
   runZimitOnce,
   sleepForRetry,
   stopContainer,
+  stopContainerGracefully,
   zimitAttemptTimeoutMs,
 } from './runtime.js'
 import type { ZimitRunOptions } from './runtime.js'
@@ -72,6 +73,11 @@ export interface RuntimeAdapter {
     exitCode?: number | null
   }>
   stopContainer(config: WebApiConfig, containerName: string): Promise<boolean>
+  stopContainerGracefully?: (
+    config: WebApiConfig,
+    containerName: string,
+    timeoutSeconds?: number,
+  ) => Promise<boolean>
   sleepForRetry(attemptIndex: number): Promise<void>
 }
 
@@ -81,6 +87,7 @@ const defaultRuntimeAdapter: RuntimeAdapter = {
   ensureZimitImage,
   runZimitOnce,
   stopContainer,
+  stopContainerGracefully,
   sleepForRetry,
 }
 
@@ -474,11 +481,7 @@ export class JobManager {
     job.cancelRequested = false
     this.recordProgress(job, 'pause', 'Pause requested. Stopping container...')
 
-    const stopPromise = this.runtime.stopContainer(this.config, job.containerName)
-    if (job.activeProcess) {
-      job.activeProcess.kill('SIGTERM')
-    }
-    await stopPromise.catch(() => undefined)
+    await this.stopContainerForPause(job)
 
     const reached = await this.waitForState(jobId, ['paused', 'failed', 'cancelled'])
     if (reached === 'paused') {
@@ -641,7 +644,7 @@ export class JobManager {
 
     for (const job of this.jobs.values()) {
       if (job.summary.state === 'running') {
-        if (await this.hasCheckpointFile(job)) {
+        if (await this.ensureCheckpointPath(job)) {
           updateJobState(job, 'paused', {
             finishedAt: null,
             errorMessage: null,
@@ -809,6 +812,7 @@ export class JobManager {
       const hostPath = outputContainerPathToHostPath(job.outputDirectory, checkpointMatch[1])
       if (hostPath) {
         job.resumeState.checkpointPath = hostPath
+        this.schedulePersist()
       }
     }
 
@@ -817,33 +821,107 @@ export class JobManager {
       const hostPath = outputContainerPathToHostPath(job.outputDirectory, tempDirectoryMatch[1])
       if (hostPath) {
         job.resumeState.tempDirectory = hostPath
+        this.schedulePersist()
       }
     }
   }
 
-  private async hasCheckpointFile(job: JobRecord): Promise<boolean> {
-    const checkpointPath = job.resumeState.checkpointPath
-    if (!checkpointPath) {
-      return false
+  private async ensureCheckpointPath(
+    job: JobRecord,
+    waitForDiscoveryMs = 0,
+  ): Promise<boolean> {
+    const deadline = Date.now() + waitForDiscoveryMs
+    let firstPass = true
+    while (firstPass || Date.now() <= deadline) {
+      firstPass = false
+      const checkpointPath = job.resumeState.checkpointPath
+      if (checkpointPath && isPathWithin(job.outputDirectory, checkpointPath)) {
+        try {
+          const stat = await fsp.stat(checkpointPath)
+          if (stat.isFile()) {
+            return true
+          }
+        } catch {
+          job.resumeState.checkpointPath = null
+        }
+      }
+
+      const discoveredPath = await this.findCheckpointInTempDirectory(job)
+      if (discoveredPath) {
+        job.resumeState.checkpointPath = discoveredPath
+        this.schedulePersist()
+        return true
+      }
+
+      if (Date.now() <= deadline) {
+        await wait(250)
+      }
+    }
+    return false
+  }
+
+  private async findCheckpointInTempDirectory(job: JobRecord): Promise<string | null> {
+    const tempDirectory = job.resumeState.tempDirectory
+    if (!tempDirectory || !isPathWithin(job.outputDirectory, tempDirectory)) {
+      return null
     }
 
-    if (!isPathWithin(job.outputDirectory, checkpointPath)) {
-      return false
+    const stack: string[] = [tempDirectory]
+    const candidates: Array<{ filePath: string; modified: number }> = []
+
+    while (stack.length > 0) {
+      const directoryPath = stack.pop()
+      if (!directoryPath) {
+        continue
+      }
+
+      let entries: fs.Dirent[]
+      try {
+        entries = await fsp.readdir(directoryPath, { withFileTypes: true })
+      } catch {
+        continue
+      }
+
+      for (const entry of entries) {
+        const fullPath = path.join(directoryPath, entry.name)
+        if (!isPathWithin(tempDirectory, fullPath)) {
+          continue
+        }
+
+        if (entry.isDirectory()) {
+          stack.push(fullPath)
+          continue
+        }
+
+        if (!entry.isFile() || !/\\.ya?ml$/i.test(entry.name)) {
+          continue
+        }
+
+        if (!fullPath.includes(`${path.sep}crawls${path.sep}`)) {
+          continue
+        }
+
+        try {
+          const stat = await fsp.stat(fullPath)
+          candidates.push({
+            filePath: fullPath,
+            modified: stat.mtimeMs,
+          })
+        } catch {
+          continue
+        }
+      }
     }
 
-    try {
-      const stat = await fsp.stat(checkpointPath)
-      return stat.isFile()
-    } catch {
-      return false
-    }
+    candidates.sort((left, right) => right.modified - left.modified)
+    return candidates[0]?.filePath ?? null
   }
 
   private async validateResumeCheckpoint(
     job: JobRecord,
   ): Promise<{ ok: true; configPath: string } | { ok: false; message: string }> {
-    const checkpointPath = job.resumeState.checkpointPath
-    if (!checkpointPath) {
+    const hasCheckpoint = await this.ensureCheckpointPath(job)
+    if (!hasCheckpoint || !job.resumeState.checkpointPath) {
       return {
         ok: false,
         message:
@@ -851,6 +929,7 @@ export class JobManager {
       }
     }
 
+    const checkpointPath = job.resumeState.checkpointPath
     if (!isPathWithin(job.outputDirectory, checkpointPath)) {
       return {
         ok: false,
@@ -879,6 +958,26 @@ export class JobManager {
       ok: true,
       configPath: checkpointPath,
     }
+  }
+
+  private async stopContainerForPause(job: JobRecord): Promise<void> {
+    const gracefulStopped = await (this.runtime.stopContainerGracefully
+      ? this.runtime
+          .stopContainerGracefully(this.config, job.containerName, 30)
+          .catch(() => false)
+      : Promise.resolve(false))
+
+    if (gracefulStopped) {
+      return
+    }
+
+    if (job.activeProcess) {
+      job.activeProcess.kill('SIGTERM')
+    }
+
+    await this.runtime
+      .stopContainer(this.config, job.containerName)
+      .catch(() => undefined)
   }
 
   private async cleanupTemporaryDirectory(job: JobRecord): Promise<void> {
@@ -966,13 +1065,6 @@ export class JobManager {
       job.outputFilename = resolvedOutputFilename
     }
 
-    if (!job.request.crawl.respectRobots) {
-      this.recordProgress(
-        job,
-        'runtime',
-        'Robots override is not directly enforceable in zimit; crawler policy remains zimit-default.',
-      )
-    }
     if (job.request.crawl.limits.maxAssetSizeMb > 0) {
       this.recordProgress(
         job,
@@ -997,7 +1089,7 @@ export class JobManager {
         this.recordProgress(job, 'cancelled', 'Job cancelled during runtime preparation')
         await this.cleanupTemporaryDirectory(job)
       } else if (job.pauseRequested) {
-        const paused = await this.hasCheckpointFile(job)
+        const paused = await this.ensureCheckpointPath(job, 6_000)
         if (paused) {
           updateJobState(job, 'paused', {
             finishedAt: null,
@@ -1040,7 +1132,7 @@ export class JobManager {
       }
 
       if (job.pauseRequested) {
-        const checkpointSaved = await this.hasCheckpointFile(job)
+        const checkpointSaved = await this.ensureCheckpointPath(job, 4_000)
         if (checkpointSaved) {
           updateJobState(job, 'paused', {
             finishedAt: null,
@@ -1093,7 +1185,7 @@ export class JobManager {
         | null = null
 
       const runOptions: ZimitRunOptions = {
-        saveStateIntervalSeconds: 60,
+        saveStateIntervalSeconds: 15,
         resumeConfigPath: resumeValidation.ok ? resumeValidation.configPath : null,
       }
 
@@ -1153,11 +1245,9 @@ export class JobManager {
       }
 
       if (job.pauseRequested) {
-        await this.runtime
-          .stopContainer(this.config, job.containerName)
-          .catch(() => undefined)
+        await this.stopContainerForPause(job)
 
-        const checkpointSaved = await this.hasCheckpointFile(job)
+        const checkpointSaved = await this.ensureCheckpointPath(job, 6_000)
         if (checkpointSaved) {
           updateJobState(job, 'paused', {
             finishedAt: null,

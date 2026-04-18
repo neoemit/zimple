@@ -1,7 +1,7 @@
 import type { CrawlOptions, Settings } from './types'
 
 export const defaultCrawlOptions: CrawlOptions = {
-  respectRobots: true,
+  respectRobots: false,
   workers: 4,
   includePatterns: [],
   excludePatterns: [],

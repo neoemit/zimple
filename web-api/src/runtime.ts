@@ -319,8 +319,8 @@ export const buildDockerArgs = (
   const sizeHardLimitBytes = Math.max(request.crawl.limits.maxTotalSizeMb, 1) * 1024 * 1024
   const timeHardLimitSeconds = zimitTimeHardLimitSeconds(request.crawl.limits.timeoutMinutes)
   const saveStateIntervalSeconds = Math.max(
-    Math.floor(options?.saveStateIntervalSeconds ?? 60),
-    10,
+    Math.floor(options?.saveStateIntervalSeconds ?? 15),
+    5,
   )
   const args = [
     'run',
@@ -379,6 +379,10 @@ export const buildDockerArgs = (
   }
   for (const pattern of request.crawl.excludePatterns) {
     args.push('--scopeExcludeRx', pattern)
+  }
+
+  if (request.crawl.respectRobots) {
+    args.push('--robots')
   }
 
   return args
@@ -594,3 +598,14 @@ export const stopContainer = async (
   containerName: string,
 ): Promise<boolean> =>
   commandSuceeds('docker', ['rm', '-f', containerName], config)
+
+export const stopContainerGracefully = async (
+  config: WebApiConfig,
+  containerName: string,
+  timeoutSeconds = 30,
+): Promise<boolean> =>
+  commandSuceeds(
+    'docker',
+    ['stop', '--time', String(Math.max(Math.floor(timeoutSeconds), 1)), containerName],
+    config,
+  )

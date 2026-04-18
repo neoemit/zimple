@@ -806,6 +806,12 @@
     font-size: 0.83rem;
   }
 
+  .scope-pattern-help {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+  }
+
   .checkbox-row input {
     width: 1rem;
     height: 1rem;
