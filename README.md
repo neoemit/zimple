@@ -41,6 +41,8 @@ cp .env.example .env
 ```
 
 2. Set output folder in `.env` (`ZIMPLE_OUTPUT_DIR`) to an absolute host path.
+   For LAN/reverse-proxy access (for example Nginx Proxy Manager), set
+   `ZIMPLE_PUBLISH_HOST=0.0.0.0`.
 
 3. Start:
 
@@ -139,6 +141,9 @@ ZIMPLE_OUTPUT_DIR=/home/you/zim-output
 - `ZIMPLE_DOCKER_SOCKET`: Docker socket path (default `/var/run/docker.sock`)
 - `ZIMPLE_BIND_ADDRESS`: API bind address (default `0.0.0.0` in compose)
 - `ZIMPLE_PORT`: API/UI port (default `8000`)
+- `ZIMPLE_PUBLISH_HOST`: host interface for published port
+  - `127.0.0.1` for local-only access
+  - `0.0.0.0` for LAN/reverse-proxy access
 - `ZIMPLE_DATA_DIR`: settings persistence directory (default `/data` in compose)
 - `ZIMPLE_ZIMIT_IMAGE`: zimit image (default `ghcr.io/openzim/zimit`)
 
@@ -177,6 +182,14 @@ npm run build:web:api
   - Run from the repository root, or provide an absolute compose file path.
   - Use:
     - `docker compose -f docker-compose.web.yml --env-file .env up --build`
+- **`502 Bad Gateway (openresty)` from Nginx Proxy Manager**
+  - If upstream is `192.168.x.x:8000`, ensure Zimple publishes on LAN:
+    - Set `ZIMPLE_PUBLISH_HOST=0.0.0.0` in `.env`
+    - Restart:
+      - `docker compose -f docker-compose.web.yml --env-file .env up -d --build`
+  - Verify on server:
+    - `curl -I http://127.0.0.1:8000/api/runtime-health`
+    - `curl -I http://<server-lan-ip>:8000/api/runtime-health`
 - **`zimit container failed with exit code 3`**
   - Output filesystem utilization is too high for browsertrix/zimit safety checks.
   - Free space on the mounted output volume or move `ZIMPLE_OUTPUT_DIR` to a less utilized disk.

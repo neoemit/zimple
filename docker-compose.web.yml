@@ -9,7 +9,7 @@ services:
     container_name: zimple-web
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${ZIMPLE_PORT:-8000}:8000"
+      - "${ZIMPLE_PUBLISH_HOST:-127.0.0.1}:${ZIMPLE_PORT:-8000}:8000"
     environment:
       ZIMPLE_BIND_ADDRESS: "0.0.0.0"
       ZIMPLE_PORT: "8000"
