@@ -48,7 +48,7 @@ npm run docker:web:up
 4. Open:
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:8000
 ```
 
 5. Stop:
@@ -68,7 +68,7 @@ npm run dev:web:api
 In another terminal:
 
 ```bash
-VITE_ZIMPLE_API_BASE_URL=http://127.0.0.1:8080 npm run dev
+VITE_ZIMPLE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ```
 
 Optional frontend-only mock mode:
@@ -91,7 +91,7 @@ ZIMPLE_OUTPUT_DIR=/home/you/zim-output
 
 ### Frontend env
 
-- `VITE_ZIMPLE_API_BASE_URL`: API base URL (example: `http://127.0.0.1:8080`)
+- `VITE_ZIMPLE_API_BASE_URL`: API base URL (example: `http://127.0.0.1:8000`)
 - `VITE_ZIMPLE_BACKEND`: optional `mock` override for UI-only development
 
 ### Web API env
@@ -99,7 +99,7 @@ ZIMPLE_OUTPUT_DIR=/home/you/zim-output
 - `ZIMPLE_OUTPUT_DIR`: absolute host path for `.zim` output
 - `ZIMPLE_DOCKER_SOCKET`: Docker socket path (default `/var/run/docker.sock`)
 - `ZIMPLE_BIND_ADDRESS`: API bind address (default `0.0.0.0` in compose)
-- `ZIMPLE_PORT`: API/UI port (default `8080`)
+- `ZIMPLE_PORT`: API/UI port (default `8000`)
 - `ZIMPLE_DATA_DIR`: settings persistence directory (default `/data` in compose)
 - `ZIMPLE_ZIMIT_IMAGE`: zimit image (default `ghcr.io/openzim/zimit`)
 

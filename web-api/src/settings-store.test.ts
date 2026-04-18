@@ -8,7 +8,7 @@ import type { WebApiConfig } from './types.js'
 
 const makeConfig = (dataDirectory: string): WebApiConfig => ({
   bindAddress: '127.0.0.1',
-  port: 8080,
+  port: 8000,
   outputDirectory: '/tmp/zimple-output',
   dataDirectory,
   dockerSocketPath: '/var/run/docker.sock',

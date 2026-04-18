@@ -58,7 +58,7 @@ export const readConfigFromEnv = (): WebApiConfig => {
 
   return {
     bindAddress: envString('ZIMPLE_BIND_ADDRESS', '127.0.0.1'),
-    port: envInt('ZIMPLE_PORT', 8080),
+    port: envInt('ZIMPLE_PORT', 8000),
     outputDirectory,
     dataDirectory,
     dockerSocketPath: envString('ZIMPLE_DOCKER_SOCKET', '/var/run/docker.sock'),

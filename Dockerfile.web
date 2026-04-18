@@ -22,11 +22,11 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/web-api/src ./web-api/src
 
-EXPOSE 8080
+EXPOSE 8000
 
 ENV NODE_ENV=production \
   ZIMPLE_BIND_ADDRESS=0.0.0.0 \
-  ZIMPLE_PORT=8080 \
+  ZIMPLE_PORT=8000 \
   ZIMPLE_OUTPUT_DIR=/tmp/zimple-web-output \
   ZIMPLE_DATA_DIR=/data \
   ZIMPLE_DOCKER_SOCKET=/var/run/docker.sock

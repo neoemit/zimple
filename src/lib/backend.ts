@@ -58,7 +58,7 @@ const getHttpApiBaseUrl = (): string => {
     return window.location.origin.replace(/\/+$/, '')
   }
 
-  return 'http://127.0.0.1:8080'
+  return 'http://127.0.0.1:8000'
 }
 
 const startIntervalPoller = (

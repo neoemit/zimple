@@ -9,10 +9,10 @@ services:
     container_name: zimple-web
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${ZIMPLE_PORT:-8080}:8080"
+      - "127.0.0.1:${ZIMPLE_PORT:-8000}:8000"
     environment:
       ZIMPLE_BIND_ADDRESS: "0.0.0.0"
-      ZIMPLE_PORT: "8080"
+      ZIMPLE_PORT: "8000"
       ZIMPLE_OUTPUT_DIR: "${ZIMPLE_OUTPUT_DIR:-/Users/thomas/Repos/zimple/bind}"
       ZIMPLE_DATA_DIR: "/data"
       ZIMPLE_DOCKER_SOCKET: "/var/run/docker.sock"
@@ -26,7 +26,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:8080/api/runtime-health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:8000/api/runtime-health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 20s
       timeout: 5s

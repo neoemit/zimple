@@ -32,7 +32,7 @@ const makeRequest = (outputDirectory: string, url = 'https://example.com'): Star
 
 const makeConfig = (outputDirectory: string, dataDirectory: string): WebApiConfig => ({
   bindAddress: '127.0.0.1',
-  port: 8080,
+  port: 8000,
   outputDirectory,
   dataDirectory,
   dockerSocketPath: '/var/run/docker.sock',

@@ -24,7 +24,7 @@ const request: StartJobRequest = {
 
 describe('HttpBackendClient', () => {
   it('submits jobs through the HTTP API', async () => {
-    const client = new HttpBackendClient('http://127.0.0.1:8080')
+    const client = new HttpBackendClient('http://127.0.0.1:8000')
     const fetchMock = vi
       .fn()
       .mockResolvedValue(
@@ -39,7 +39,7 @@ describe('HttpBackendClient', () => {
     const response = await client.startJob(request)
     expect(response.jobId).toBe('job-123')
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8080/api/jobs',
+      'http://127.0.0.1:8000/api/jobs',
       expect.objectContaining({
         method: 'POST',
       }),
@@ -47,7 +47,7 @@ describe('HttpBackendClient', () => {
   })
 
   it('opens output downloads through the API endpoint', async () => {
-    const client = new HttpBackendClient('http://127.0.0.1:8080')
+    const client = new HttpBackendClient('http://127.0.0.1:8000')
     const openMock = vi.fn(() => ({ closed: false }))
     vi.stubGlobal('open', openMock)
     window.open = openMock as unknown as typeof window.open
@@ -55,14 +55,14 @@ describe('HttpBackendClient', () => {
     const response = await client.openOutput('job-999')
     expect(response.opened).toBe(true)
     expect(openMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8080/api/jobs/job-999/output',
+      'http://127.0.0.1:8000/api/jobs/job-999/output',
       '_blank',
       'noopener,noreferrer',
     )
   })
 
   it('calls clear-terminal endpoint for queue cleanup', async () => {
-    const client = new HttpBackendClient('http://127.0.0.1:8080')
+    const client = new HttpBackendClient('http://127.0.0.1:8000')
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ removed: 4 }), {
         status: 200,
@@ -74,7 +74,7 @@ describe('HttpBackendClient', () => {
     const response = await client.clearQueue()
     expect(response.removed).toBe(4)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8080/api/jobs/clear-terminal',
+      'http://127.0.0.1:8000/api/jobs/clear-terminal',
       expect.objectContaining({
         method: 'POST',
       }),
@@ -82,7 +82,7 @@ describe('HttpBackendClient', () => {
   })
 
   it('calls pause endpoint for running jobs', async () => {
-    const client = new HttpBackendClient('http://127.0.0.1:8080')
+    const client = new HttpBackendClient('http://127.0.0.1:8000')
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ paused: true }), {
         status: 200,
@@ -94,7 +94,7 @@ describe('HttpBackendClient', () => {
     const response = await client.pauseJob('job-7')
     expect(response.paused).toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8080/api/jobs/job-7/pause',
+      'http://127.0.0.1:8000/api/jobs/job-7/pause',
       expect.objectContaining({
         method: 'POST',
       }),
@@ -102,7 +102,7 @@ describe('HttpBackendClient', () => {
   })
 
   it('calls resume endpoint for paused jobs', async () => {
-    const client = new HttpBackendClient('http://127.0.0.1:8080')
+    const client = new HttpBackendClient('http://127.0.0.1:8000')
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ resumed: true }), {
         status: 200,
@@ -114,7 +114,7 @@ describe('HttpBackendClient', () => {
     const response = await client.resumeJob('job-8')
     expect(response.resumed).toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8080/api/jobs/job-8/resume',
+      'http://127.0.0.1:8000/api/jobs/job-8/resume',
       expect.objectContaining({
         method: 'POST',
       }),
