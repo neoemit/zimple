@@ -10,6 +10,7 @@ const makeConfig = (dataDirectory: string): WebApiConfig => ({
   bindAddress: '127.0.0.1',
   port: 8000,
   outputDirectory: '/tmp/zimple-output',
+  stagingDirectory: null,
   dataDirectory,
   dockerSocketPath: '/var/run/docker.sock',
   zimitImage: 'ghcr.io/openzim/zimit',

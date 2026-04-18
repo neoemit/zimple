@@ -45,6 +45,7 @@ interface JobRecord {
   logs: string[]
   progress: ProgressEvent[]
   outputDirectory: string
+  targetOutputDirectory: string
   outputFilename: string
   containerName: string
   cancelRequested: boolean
@@ -298,22 +299,32 @@ export class JobManager {
 
   async startJob(request: StartJobRequest): Promise<{ jobId: string }> {
     const { normalized, outputFilename } = normalizeStartJobRequest(request)
-    const configuredOutputDir =
+    const targetOutputDir =
       normalized.outputDirectory?.trim() ||
       this.settings.outputDirectory?.trim() ||
       this.config.outputDirectory
-    if (!configuredOutputDir) {
+    if (!targetOutputDir) {
       throw new Error(
         'No output directory configured. Set one in settings before starting jobs.',
       )
     }
-    if (!isAbsolutePath(configuredOutputDir)) {
+    if (!isAbsolutePath(targetOutputDir)) {
       throw new Error(
-        `Output directory must be absolute for Docker socket mode. Received: ${configuredOutputDir}`,
+        `Output directory must be absolute for Docker socket mode. Received: ${targetOutputDir}`,
       )
     }
 
-    await fsp.mkdir(configuredOutputDir, { recursive: true })
+    const runtimeOutputDir = this.config.stagingDirectory || targetOutputDir
+    if (!isAbsolutePath(runtimeOutputDir)) {
+      throw new Error(
+        `Staging directory must be absolute for Docker socket mode. Received: ${runtimeOutputDir}`,
+      )
+    }
+
+    await Promise.all([
+      fsp.mkdir(targetOutputDir, { recursive: true }),
+      fsp.mkdir(runtimeOutputDir, { recursive: true }),
+    ])
 
     const jobId = randomUUID()
     const containerName = this.runtime.containerNameForJob(jobId)
@@ -335,7 +346,8 @@ export class JobManager {
       request: normalized,
       logs: ['Job queued'],
       progress: [],
-      outputDirectory: configuredOutputDir,
+      outputDirectory: runtimeOutputDir,
+      targetOutputDirectory: targetOutputDir,
       outputFilename,
       containerName,
       cancelRequested: false,
@@ -707,6 +719,7 @@ export class JobManager {
       logs: [...stored.logs],
       progress: stored.progress.map((event) => ({ ...event })),
       outputDirectory: stored.outputDirectory,
+      targetOutputDirectory: stored.targetOutputDirectory || stored.outputDirectory,
       outputFilename: stored.outputFilename,
       containerName,
       cancelRequested: false,
@@ -748,6 +761,7 @@ export class JobManager {
       logs: job.logs.slice(-MAX_PERSISTED_LOGS),
       progress: job.progress.slice(-MAX_PERSISTED_PROGRESS).map((event) => ({ ...event })),
       outputDirectory: job.outputDirectory,
+      targetOutputDirectory: job.targetOutputDirectory,
       outputFilename: job.outputFilename,
       containerName: job.containerName,
       resumeState: {
@@ -807,6 +821,58 @@ export class JobManager {
       void this.flushPersistNow()
     } else {
       this.schedulePersist()
+    }
+  }
+
+  private async copyStagedOutputToTarget(
+    job: JobRecord,
+    stagedOutputPath: string,
+    attempt: number,
+  ): Promise<{ ok: true; outputPath: string } | { ok: false; message: string }> {
+    if (job.targetOutputDirectory === job.outputDirectory) {
+      return {
+        ok: true,
+        outputPath: stagedOutputPath,
+      }
+    }
+
+    const extension = path.extname(stagedOutputPath) || '.zim'
+    const baseName = path.basename(stagedOutputPath, extension)
+    const preferredTargetPath = path.join(job.targetOutputDirectory, `${baseName}${extension}`)
+
+    try {
+      await fsp.mkdir(job.targetOutputDirectory, { recursive: true })
+      const finalBaseName = ensureAvailableOutputFilename(job.targetOutputDirectory, baseName)
+      const finalTargetPath = path.join(job.targetOutputDirectory, `${finalBaseName}${extension}`)
+      if (finalTargetPath !== preferredTargetPath) {
+        this.recordProgress(
+          job,
+          'runtime',
+          `Final output ${preferredTargetPath} already exists. Using ${finalTargetPath}.`,
+          attempt,
+        )
+      }
+
+      await fsp.copyFile(stagedOutputPath, finalTargetPath)
+      this.recordProgress(
+        job,
+        'output',
+        `Copied output to final destination: ${finalTargetPath}`,
+        attempt,
+      )
+      await fsp.unlink(stagedOutputPath).catch(() => undefined)
+
+      return {
+        ok: true,
+        outputPath: finalTargetPath,
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        message:
+          `Capture archive was generated in staging (${stagedOutputPath}) but could not be copied to ` +
+          `${job.targetOutputDirectory}: ${(error as Error).message}`,
+      }
     }
   }
 
@@ -1123,6 +1189,13 @@ export class JobManager {
     }
 
     const retries = Math.max(0, job.request.crawl.limits.retries)
+    if (job.outputDirectory !== job.targetOutputDirectory) {
+      this.recordProgress(
+        job,
+        'runtime',
+        `Using staging directory ${job.outputDirectory}. Completed archives will be copied to ${job.targetOutputDirectory}.`,
+      )
+    }
 
     for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
       if (job.cancelRequested) {
@@ -1302,13 +1375,26 @@ export class JobManager {
           job.outputFilename,
         )
         if (outputPath) {
+          const copied = await this.copyStagedOutputToTarget(job, outputPath, attempt)
+          if (!copied.ok) {
+            updateJobState(job, 'failed', {
+              finishedAt: nowIso(),
+              errorMessage: copied.message,
+            })
+            this.recordProgress(job, 'error', copied.message, attempt)
+            this.recordProgress(job, 'failed', 'ZIM build failed', attempt)
+            await this.cleanupTemporaryDirectory(job)
+            await this.flushPersistNow()
+            return
+          }
+
           updateJobState(job, 'succeeded', {
             finishedAt: nowIso(),
-            outputPath,
+            outputPath: copied.outputPath,
             errorMessage: null,
           })
           this.recordProgress(job, 'completed', 'ZIM build completed', attempt)
-          this.recordProgress(job, 'output', `Generated output: ${outputPath}`, attempt)
+          this.recordProgress(job, 'output', `Generated output: ${copied.outputPath}`, attempt)
           await this.cleanupTemporaryDirectory(job)
           await this.flushPersistNow()
           return

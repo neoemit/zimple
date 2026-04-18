@@ -27,6 +27,14 @@ describe('errorPresentation', () => {
     expect(interpreted?.raw).toBe(raw)
   })
 
+  it('interprets profile lock failures on exit code 9', () => {
+    const raw =
+      'zimit container failed with exit code 9. Last output: Crawl failed | The browser is already running for /output/.tmp123/profile'
+    const interpreted = interpretError(raw)
+    expect(interpreted?.headline).toContain('profile lock conflict')
+    expect(interpreted?.actions.join(' ')).toContain('ZIMPLE_STAGING_DIR')
+  })
+
   it('summarizes messages for toast display', () => {
     const raw =
       'zimit container failed with exit code 3. Detected output filesystem usage: 98%. Last output: Out of disk space, exiting. Quitting'

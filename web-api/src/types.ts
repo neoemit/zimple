@@ -101,6 +101,7 @@ export interface WebApiConfig {
   bindAddress: string
   port: number
   outputDirectory: string
+  stagingDirectory: string | null
   dataDirectory: string
   dockerSocketPath: string
   zimitImage: string

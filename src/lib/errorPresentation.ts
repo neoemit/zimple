@@ -72,6 +72,23 @@ export const interpretError = (rawMessage: string): InterpretedError | null => {
     }
   }
 
+  if (
+    lowered.includes('exit code 9') &&
+    lowered.includes('browser is already running for')
+  ) {
+    return {
+      headline: 'Capture failed due to browser profile lock conflict.',
+      detail:
+        'This commonly occurs when crawling on CIFS/NFS output paths where Chromium profile locks are unreliable.',
+      actions: [
+        'Set ZIMPLE_STAGING_DIR to a local disk path and retry.',
+        'Remove stale .tmp* crawl folders in the output directory after failed runs.',
+        'Retry with workers set to 1 for server validation runs.',
+      ],
+      raw,
+    }
+  }
+
   if (lowered.includes('failed to fetch')) {
     return {
       headline: 'Could not reach the backend service.',

@@ -43,6 +43,8 @@ cp .env.example .env
 2. Set output folder in `.env` (`ZIMPLE_OUTPUT_DIR`) to an absolute host path.
    For LAN/reverse-proxy access (for example Nginx Proxy Manager), set
    `ZIMPLE_PUBLISH_HOST=0.0.0.0`.
+   If your output is on CIFS/NFS, set a local staging folder:
+   `ZIMPLE_STAGING_DIR=/var/tmp/zimple-staging`.
 
 3. Start:
 
@@ -122,6 +124,10 @@ Pattern syntax reference:
 
 When running with `docker-compose.web.yml`, set `ZIMPLE_OUTPUT_DIR` to the absolute host folder you want. The compose file mounts that same path into the container so nested `docker run` calls can write outputs correctly.
 
+If `ZIMPLE_OUTPUT_DIR` points to CIFS/NFS, use `ZIMPLE_STAGING_DIR` on a local disk so
+Browsertrix can crawl using local profile/temp data and then copy completed `.zim` files to
+`ZIMPLE_OUTPUT_DIR`.
+
 Example:
 
 ```env
@@ -138,6 +144,7 @@ ZIMPLE_OUTPUT_DIR=/home/you/zim-output
 ### Web API env
 
 - `ZIMPLE_OUTPUT_DIR`: absolute host path for `.zim` output
+- `ZIMPLE_STAGING_DIR`: optional absolute local host path used for crawl staging/output before copying final `.zim` archives into `ZIMPLE_OUTPUT_DIR`
 - `ZIMPLE_DOCKER_SOCKET`: Docker socket path (default `/var/run/docker.sock`)
 - `ZIMPLE_BIND_ADDRESS`: API bind address (default `0.0.0.0` in compose)
 - `ZIMPLE_PORT`: API/UI port (default `8000`)
@@ -193,5 +200,12 @@ npm run build:web:api
 - **`zimit container failed with exit code 3`**
   - Output filesystem utilization is too high for browsertrix/zimit safety checks.
   - Free space on the mounted output volume or move `ZIMPLE_OUTPUT_DIR` to a less utilized disk.
+- **`zimit container failed with exit code 9` and log mentions browser already running for profile**
+  - This is often a Chromium profile lock issue on CIFS/NFS-mounted output directories.
+  - Use local staging:
+    - Set `ZIMPLE_STAGING_DIR` to a local disk path (example `/var/tmp/zimple-staging`)
+    - Restart:
+      - `docker compose -f docker-compose.web.yml --env-file .env up -d --build`
+  - Remove stale temp folders from failed runs in `ZIMPLE_OUTPUT_DIR` (for example `.tmp*`) if no longer needed.
 - **Web mode job cannot write output**
   - Confirm `ZIMPLE_OUTPUT_DIR` is absolute, exists on host, and is mounted with the same absolute path in compose.

@@ -578,6 +578,16 @@ export const runZimitOnce = async (
           ' Exit code 15 indicates the runtime was interrupted (timeout or external stop request).'
       }
     }
+    if (
+      exitCode === 9 &&
+      recentOutput.some((line) =>
+        line.toLowerCase().includes('browser is already running for'),
+      )
+    ) {
+      retryable = false
+      message +=
+        ' Exit code 9 with browser profile lock usually indicates filesystem locking issues (often CIFS/NFS). Configure ZIMPLE_STAGING_DIR to a local disk path and retry.'
+    }
     if (recentOutput.length > 0) {
       message += ` Last output: ${recentOutput.join(' | ')}`
     }

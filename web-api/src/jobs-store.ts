@@ -23,6 +23,7 @@ export interface StoredJobRecord {
   logs: string[]
   progress: ProgressEvent[]
   outputDirectory: string
+  targetOutputDirectory?: string
   outputFilename: string
   containerName: string
   resumeState: StoredResumeState
@@ -220,6 +221,12 @@ const normalizeStoredRecord = (input: unknown): StoredJobRecord | null => {
     logs: toStringList(input.logs),
     progress,
     outputDirectory: typeof input.outputDirectory === 'string' ? input.outputDirectory : '',
+    targetOutputDirectory:
+      typeof input.targetOutputDirectory === 'string'
+        ? input.targetOutputDirectory
+        : typeof input.outputDirectory === 'string'
+          ? input.outputDirectory
+          : '',
     outputFilename: typeof input.outputFilename === 'string' ? input.outputFilename : 'site',
     containerName: typeof input.containerName === 'string' ? input.containerName : '',
     resumeState: normalizeResumeState(input.resumeState),
@@ -275,6 +282,7 @@ export const saveJobsState = async (
       logs: [...job.logs],
       progress: job.progress.map((event) => ({ ...event })),
       outputDirectory: job.outputDirectory,
+      targetOutputDirectory: job.targetOutputDirectory || job.outputDirectory,
       outputFilename: job.outputFilename,
       containerName: job.containerName,
       resumeState: {

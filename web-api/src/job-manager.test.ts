@@ -34,6 +34,7 @@ const makeConfig = (outputDirectory: string, dataDirectory: string): WebApiConfi
   bindAddress: '127.0.0.1',
   port: 8000,
   outputDirectory,
+  stagingDirectory: null,
   dataDirectory,
   dockerSocketPath: '/var/run/docker.sock',
   zimitImage: 'ghcr.io/openzim/zimit',
@@ -124,6 +125,55 @@ describe('JobManager queue behavior', () => {
     expect(secondDetail?.summary.outputPath).toMatch(/\.zim$/)
 
     await fs.rm(outputDir, { recursive: true, force: true })
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('uses staging output and copies archive to final output directory on success', async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-final-'))
+    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-stage-'))
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-data-'))
+
+    const runtime: RuntimeAdapter = {
+      checkRuntimeHealth: async () => ({
+        dockerInstalled: true,
+        dockerResponsive: true,
+        zimitImagePresent: true,
+        ready: true,
+        message: 'ok',
+      }),
+      containerNameForJob: (jobId) => `zimple-${jobId.slice(0, 12)}`,
+      ensureZimitImage: async () => false,
+      runZimitOnce: async (_config, _request, runtimeOutputDirectory, outputFilename) => {
+        await fs.writeFile(path.join(runtimeOutputDirectory, `${outputFilename}.zim`), 'zim')
+        return { success: true }
+      },
+      stopContainer: async () => true,
+      sleepForRetry: async () => undefined,
+    }
+
+    const manager = await JobManager.create(
+      {
+        ...makeConfig(outputDir, dataDir),
+        stagingDirectory: stagingDir,
+      },
+      runtime,
+    )
+
+    const started = await manager.startJob(makeRequest(outputDir, 'https://example.com/staged'))
+    expect(await waitForTerminalState(manager, started.jobId)).toBe('succeeded')
+
+    const detail = manager.getJob(started.jobId)
+    expect(detail?.summary.outputPath).toBeTruthy()
+    expect(path.dirname(detail?.summary.outputPath || '')).toBe(outputDir)
+
+    const finalEntries = await fs.readdir(outputDir)
+    expect(finalEntries.some((name) => name.toLowerCase().endsWith('.zim'))).toBe(true)
+
+    const stagedEntries = await fs.readdir(stagingDir)
+    expect(stagedEntries.some((name) => name.toLowerCase().endsWith('.zim'))).toBe(false)
+
+    await fs.rm(outputDir, { recursive: true, force: true })
+    await fs.rm(stagingDir, { recursive: true, force: true })
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 

@@ -13,11 +13,13 @@ services:
     environment:
       ZIMPLE_BIND_ADDRESS: "0.0.0.0"
       ZIMPLE_PORT: "8000"
+      ZIMPLE_STAGING_DIR: "${ZIMPLE_STAGING_DIR:-}"
       ZIMPLE_OUTPUT_DIR: "${ZIMPLE_OUTPUT_DIR:-/Users/thomas/Repos/zimple/bind}"
       ZIMPLE_DATA_DIR: "/data"
       ZIMPLE_DOCKER_SOCKET: "/var/run/docker.sock"
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
+      - "${ZIMPLE_STAGING_DIR:-/var/tmp/zimple-staging}:${ZIMPLE_STAGING_DIR:-/var/tmp/zimple-staging}"
       - "${ZIMPLE_OUTPUT_DIR:-/Users/thomas/Repos/zimple/bind}:${ZIMPLE_OUTPUT_DIR:-/Users/thomas/Repos/zimple/bind}"
       - "${ZIMPLE_DATA_DIR:-./.zimple-web-data}:/data"
     healthcheck:

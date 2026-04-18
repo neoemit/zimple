@@ -8,6 +8,7 @@ const config: WebApiConfig = {
   bindAddress: '127.0.0.1',
   port: 8000,
   outputDirectory: '/tmp/zimple-output',
+  stagingDirectory: null,
   dataDirectory: '/tmp/zimple-data',
   dockerSocketPath: '/var/run/docker.sock',
   zimitImage: 'ghcr.io/openzim/zimit',
