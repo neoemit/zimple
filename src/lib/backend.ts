@@ -260,7 +260,11 @@ class MockBackendClient implements BackendClient {
     let removed = 0
 
     for (const [jobId, job] of this.jobs.entries()) {
-      if (job.summary.state === 'failed' || job.summary.state === 'cancelled') {
+      if (
+        job.summary.state === 'succeeded' ||
+        job.summary.state === 'failed' ||
+        job.summary.state === 'cancelled'
+      ) {
         this.jobs.delete(jobId)
         removed += 1
       }

@@ -613,7 +613,7 @@ function App({ backend = getBackendClient() }: AppProps) {
           `Cleared ${response.removed} ${response.removed === 1 ? 'job' : 'jobs'} from queue.`,
         )
       } else {
-        setInfoMessage('No failed or cancelled jobs to clear.')
+        setInfoMessage('No completed, failed, or cancelled jobs to clear.')
       }
     } catch (error) {
       setErrorMessage(formatErrorMessage(error))

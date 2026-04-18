@@ -564,7 +564,11 @@ export class JobManager {
     const removedIds = new Set<string>()
 
     for (const [jobId, job] of this.jobs.entries()) {
-      if (job.summary.state === 'failed' || job.summary.state === 'cancelled') {
+      if (
+        job.summary.state === 'succeeded' ||
+        job.summary.state === 'failed' ||
+        job.summary.state === 'cancelled'
+      ) {
         this.jobs.delete(jobId)
         removedIds.add(jobId)
         removed += 1

@@ -34,7 +34,8 @@ function QueuePane({
   clearingQueue = false,
 }: QueuePaneProps) {
   const clearableCount = jobs.filter(
-    (job) => job.state === 'failed' || job.state === 'cancelled',
+    (job) =>
+      job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled',
   ).length
 
   return (
@@ -49,17 +50,15 @@ function QueuePane({
             <Plus size={15} />
             Add Job
           </button>
-          {clearableCount > 0 && (
-            <button
-              type="button"
-              className="ghost mini-action"
-              onClick={onClearQueue}
-              disabled={clearingQueue}
-            >
-              <Trash2 size={15} />
-              {clearingQueue ? 'Clearing...' : `Clear Queue (${clearableCount})`}
-            </button>
-          )}
+          <button
+            type="button"
+            className="ghost mini-action"
+            onClick={onClearQueue}
+            disabled={clearingQueue}
+          >
+            <Trash2 size={15} />
+            {clearingQueue ? 'Clearing...' : `Clear Queue (${clearableCount})`}
+          </button>
           {showCloseButton && onClose && (
             <button type="button" className="ghost mini-action" onClick={onClose}>
               <XCircle size={15} />

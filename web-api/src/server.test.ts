@@ -73,7 +73,7 @@ describe('server api endpoints', () => {
     await app.close()
   })
 
-  it('clears failed and cancelled terminal jobs', async () => {
+  it('clears completed and terminal jobs', async () => {
     const clearQueue = vi.fn(() => ({ removed: 3 }))
     const manager = {
       getRuntimeHealth: vi.fn(),

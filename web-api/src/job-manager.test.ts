@@ -557,7 +557,7 @@ describe('JobManager queue behavior', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  it('clearQueue removes failed/cancelled while keeping queued/running/succeeded', async () => {
+  it('clearQueue removes succeeded/failed/cancelled while keeping queued/running', async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-clear-'))
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-data-'))
 
@@ -619,11 +619,11 @@ describe('JobManager queue behavior', () => {
     await waitForState(manager, queued.jobId, 'queued')
 
     const clearResult = manager.clearQueue()
-    expect(clearResult.removed).toBe(2)
+    expect(clearResult.removed).toBe(3)
 
+    expect(manager.getJob(succeeded.jobId)).toBeNull()
     expect(manager.getJob(failed.jobId)).toBeNull()
     expect(manager.getJob(cancelled.jobId)).toBeNull()
-    expect(manager.getJob(succeeded.jobId)?.summary.state).toBe('succeeded')
     expect(manager.getJob(running.jobId)?.summary.state).toBe('running')
     expect(manager.getJob(queued.jobId)?.summary.state).toBe('queued')
 

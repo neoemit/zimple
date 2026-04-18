@@ -145,7 +145,12 @@ const makeBackend = (options: BackendOptions = {}): BackendClient => {
     clearQueue: vi.fn(async () => {
       const removableIds = new Set(
         jobs
-          .filter((job) => job.state === 'failed' || job.state === 'cancelled')
+          .filter(
+            (job) =>
+              job.state === 'succeeded' ||
+              job.state === 'failed' ||
+              job.state === 'cancelled',
+          )
           .map((job) => job.id),
       )
       const removed = removableIds.size
@@ -500,7 +505,7 @@ describe('App', () => {
     expect(getJobMock.mock.calls.length).toBe(callsBefore)
   })
 
-  it('clears failed and cancelled jobs from queue via clear action', async () => {
+  it('clears succeeded, failed, and cancelled jobs from queue via clear action', async () => {
     const now = new Date().toISOString()
     const runningSummary: JobSummary = {
       id: 'job-running',
@@ -511,6 +516,17 @@ describe('App', () => {
       startedAt: now,
       finishedAt: null,
       outputPath: null,
+      errorMessage: null,
+    }
+    const succeededSummary: JobSummary = {
+      id: 'job-succeeded',
+      url: 'https://example.com/succeeded',
+      state: 'succeeded',
+      createdAt: now,
+      attempt: 1,
+      startedAt: now,
+      finishedAt: now,
+      outputPath: '/tmp/zimple/succeeded.zim',
       errorMessage: null,
     }
     const failedSummary: JobSummary = {
@@ -537,11 +553,12 @@ describe('App', () => {
     }
 
     const backend = makeBackend({
-      jobs: [runningSummary, failedSummary, cancelledSummary],
+      jobs: [runningSummary, succeededSummary, failedSummary, cancelledSummary],
     })
 
     render(<App backend={backend} />)
 
+    expect(await screen.findByText('https://example.com/succeeded')).toBeInTheDocument()
     expect(await screen.findByText('https://example.com/failed')).toBeInTheDocument()
     expect(screen.getByText('https://example.com/cancelled')).toBeInTheDocument()
 
@@ -552,11 +569,36 @@ describe('App', () => {
     })
 
     await waitFor(() => {
+      expect(screen.queryByText('https://example.com/succeeded')).not.toBeInTheDocument()
       expect(screen.queryByText('https://example.com/failed')).not.toBeInTheDocument()
       expect(screen.queryByText('https://example.com/cancelled')).not.toBeInTheDocument()
     })
 
     expect(screen.getAllByText('https://example.com/running').length).toBeGreaterThan(0)
+  })
+
+  it('shows clear queue control even when there are no clearable jobs', async () => {
+    const now = new Date().toISOString()
+    const runningSummary: JobSummary = {
+      id: 'job-running',
+      url: 'https://example.com/running',
+      state: 'running',
+      createdAt: now,
+      attempt: 1,
+      startedAt: now,
+      finishedAt: null,
+      outputPath: null,
+      errorMessage: null,
+    }
+
+    const backend = makeBackend({
+      jobs: [runningSummary],
+    })
+
+    render(<App backend={backend} />)
+
+    expect(await screen.findByLabelText('job-queue')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Clear Queue (0)' })).toBeInTheDocument()
   })
 
   it('supports pause and resume actions for running and paused jobs', async () => {
