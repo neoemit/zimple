@@ -157,6 +157,18 @@ const normalizeRequest = (input: unknown): StartJobRequest | null => {
       typeof input.outputFilename === 'string' || input.outputFilename === null
         ? input.outputFilename
         : null,
+    title:
+      typeof input.title === 'string' || input.title === null
+        ? input.title
+        : null,
+    description:
+      typeof input.description === 'string' || input.description === null
+        ? input.description
+        : null,
+    faviconUrl:
+      typeof input.faviconUrl === 'string' || input.faviconUrl === null
+        ? input.faviconUrl
+        : null,
     crawl: {
       respectRobots: crawl.respectRobots,
       workers: crawl.workers,

@@ -24,6 +24,10 @@ This repository is now **web-only**:
   - Max asset size: `50 MB`
   - Timeout: `180 minutes`
   - Retries: `2`
+- Capture metadata defaults:
+  - Title: derived from site host (example: `reticulum.network` -> `Reticulum Network`)
+  - Description: `Offline version of {title}`
+  - Favicon: defaults to `/favicon.ico` and is auto-detected from page `<link rel="icon">` when available
 - No telemetry; logs stay local
 
 ## Prerequisites
@@ -120,6 +124,16 @@ Exclude
 Pattern syntax reference:
 [Browsertrix Crawler scope docs](https://crawler.docs.browsertrix.com/user-guide/crawl-scope/)
 
+## Capture metadata fields
+
+In **Create Capture Job -> Optional fields**:
+
+- `Capture Title` (editable, prefilled from URL host)
+- `Description` (editable, prefilled as `Offline version of {title}`)
+- `Favicon URL` (editable, prefilled as `<site-origin>/favicon.ico`)
+
+These map to ZIM metadata and improve Kiwix listing display.
+
 ## Output folder binding (Linux/macOS)
 
 When running with `docker-compose.web.yml`, set `ZIMPLE_OUTPUT_DIR` to the absolute host folder you want. The compose file mounts that same path into the container so nested `docker run` calls can write outputs correctly.
@@ -157,6 +171,7 @@ ZIMPLE_OUTPUT_DIR=/home/you/zim-output
 ## HTTP API
 
 - `POST /api/jobs`
+  - accepts optional metadata fields: `title`, `description`, `faviconUrl`
 - `GET /api/jobs`
 - `GET /api/jobs/:jobId`
 - `GET /api/jobs/:jobId/progress?after=<cursor>&limit=<n>`

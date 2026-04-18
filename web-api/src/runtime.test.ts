@@ -10,6 +10,9 @@ import type { StartJobRequest } from './types.js'
 
 const request: StartJobRequest = {
   url: 'https://example.com',
+  title: 'Example',
+  description: 'Offline version of Example',
+  faviconUrl: 'https://example.com/favicon.ico',
   crawl: {
     respectRobots: true,
     workers: 4,
@@ -52,6 +55,12 @@ describe('runtime helpers', () => {
     expect(args).toContain('zimit')
     expect(args).toContain('--seeds')
     expect(args).toContain('https://example.com')
+    expect(args).toContain('--title')
+    expect(args).toContain('Example')
+    expect(args).toContain('--description')
+    expect(args).toContain('Offline version of Example')
+    expect(args).toContain('--favicon')
+    expect(args).toContain('https://example.com/favicon.ico')
     expect(args).toContain('--driver')
     expect(args).toContain('/output/.driver.mjs')
     expect(args).toContain('--scopeIncludeRx')

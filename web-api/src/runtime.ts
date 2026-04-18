@@ -140,6 +140,13 @@ const normalizeZimitLogLine = (line: string): string | null => {
       const failed = Number(details.failed ?? 0)
       return `Crawl progress: ${crawled}/${total} crawled, ${pending} pending, ${failed} failed`
     }
+    if (message === 'Crawl failed') {
+      const detailMessage =
+        typeof details.message === 'string' ? details.message.trim() : ''
+      return detailMessage.length > 0
+        ? `Crawl failed: ${detailMessage}`
+        : 'Crawl failed'
+    }
     if (message === 'Crawling done') {
       return 'Crawl completed. Starting ZIM conversion...'
     }
@@ -318,6 +325,11 @@ export const buildDockerArgs = (
   const includePatterns = effectiveIncludePatterns(request)
   const sizeHardLimitBytes = Math.max(request.crawl.limits.maxTotalSizeMb, 1) * 1024 * 1024
   const timeHardLimitSeconds = zimitTimeHardLimitSeconds(request.crawl.limits.timeoutMinutes)
+  const effectiveTitle = request.title?.trim() || outputFilename
+  const effectiveDescription =
+    request.description?.trim() || `Offline version of ${effectiveTitle}`
+  const effectiveFaviconUrl =
+    request.faviconUrl?.trim() || new URL('/favicon.ico', request.url).toString()
   const saveStateIntervalSeconds = Math.max(
     Math.floor(options?.saveStateIntervalSeconds ?? 15),
     5,
@@ -335,6 +347,12 @@ export const buildDockerArgs = (
     request.url.trim(),
     '--name',
     outputFilename,
+    '--title',
+    effectiveTitle,
+    '--description',
+    effectiveDescription,
+    '--favicon',
+    effectiveFaviconUrl,
     '--output',
     '/output',
     '--scopeType',

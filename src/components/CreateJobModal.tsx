@@ -1,6 +1,7 @@
 import { Loader2, PlayCircle, Settings, X, XCircle } from 'lucide-react'
 import type { Dispatch, FormEvent, SetStateAction } from 'react'
 import type { StartJobRequest } from '../lib/types'
+import { applyAutofilledMetadataForUrl } from '../lib/captureMetadata'
 
 interface CreateJobModalProps {
   request: StartJobRequest
@@ -49,7 +50,9 @@ function CreateJobModal({
                 placeholder="https://example.com"
                 value={request.url}
                 onChange={(event) =>
-                  setRequest((current) => ({ ...current, url: event.target.value }))
+                  setRequest((current) =>
+                    applyAutofilledMetadataForUrl(current, event.target.value),
+                  )
                 }
                 required
               />
@@ -69,6 +72,51 @@ function CreateJobModal({
                       setRequest((current) => ({
                         ...current,
                         outputFilename: event.target.value || null,
+                      }))
+                    }
+                  />
+                </label>
+
+                <label>
+                  Capture Title (optional)
+                  <input
+                    aria-label="capture-title"
+                    type="text"
+                    value={request.title ?? ''}
+                    onChange={(event) =>
+                      setRequest((current) => ({
+                        ...current,
+                        title: event.target.value || null,
+                      }))
+                    }
+                  />
+                </label>
+
+                <label>
+                  Description (optional)
+                  <input
+                    aria-label="capture-description"
+                    type="text"
+                    value={request.description ?? ''}
+                    onChange={(event) =>
+                      setRequest((current) => ({
+                        ...current,
+                        description: event.target.value || null,
+                      }))
+                    }
+                  />
+                </label>
+
+                <label>
+                  Favicon URL (optional)
+                  <input
+                    aria-label="capture-favicon-url"
+                    type="url"
+                    value={request.faviconUrl ?? ''}
+                    onChange={(event) =>
+                      setRequest((current) => ({
+                        ...current,
+                        faviconUrl: event.target.value || null,
                       }))
                     }
                   />

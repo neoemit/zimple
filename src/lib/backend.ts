@@ -1,4 +1,5 @@
 import { defaultCrawlOptions, defaultSettings } from './defaults'
+import { deriveCaptureMetadataDefaults } from './captureMetadata'
 import type {
   BackendCapabilities,
   CancelJobResponse,
@@ -555,6 +556,7 @@ export const getBackendClient = (): BackendClient => {
 }
 
 export const createDefaultStartJobRequest = (): StartJobRequest => ({
+  ...deriveCaptureMetadataDefaults(''),
   url: '',
   outputFilename: null,
   outputDirectory: null,

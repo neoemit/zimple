@@ -232,6 +232,9 @@ describe('App', () => {
         expect.objectContaining({
           url: 'https://example.com',
           outputDirectory: null,
+          title: 'Example Com',
+          description: 'Offline version of Example Com',
+          faviconUrl: 'https://example.com/favicon.ico',
         }),
       )
     })

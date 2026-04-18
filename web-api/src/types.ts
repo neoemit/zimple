@@ -21,6 +21,9 @@ export interface StartJobRequest {
   url: string
   outputDirectory?: string | null
   outputFilename?: string | null
+  title?: string | null
+  description?: string | null
+  faviconUrl?: string | null
   crawl: CrawlOptions
 }
 

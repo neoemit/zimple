@@ -21,6 +21,7 @@ import {
 import { defaultSettings } from './lib/defaults'
 import { summarizeErrorForToast } from './lib/errorPresentation'
 import { compareJobsByCreated } from './lib/presentation'
+import { deriveCaptureMetadataDefaults } from './lib/captureMetadata'
 import type {
   JobDetail,
   JobSummary,
@@ -486,6 +487,7 @@ function App({ backend = getBackendClient() }: AppProps) {
       setInfoMessage(`Job queued: ${response.jobId}`)
       setRequest((current) => ({
         ...current,
+        ...deriveCaptureMetadataDefaults(''),
         url: '',
         outputFilename: null,
         outputDirectory: null,

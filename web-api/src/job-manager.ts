@@ -18,6 +18,14 @@ import { loadSettings, saveSettings } from './settings-store.js'
 import { loadJobsState, saveJobsState } from './jobs-store.js'
 import type { StoredJobRecord } from './jobs-store.js'
 import { normalizeStartJobRequest, nowIso } from './validation.js'
+import {
+  deriveCaptureTitleFromUrl,
+  deriveDefaultCaptureDescription,
+  deriveDefaultFaviconUrl,
+  discoverFaviconUrlFromWebsite,
+  normalizeFaviconUrl,
+  normalizeMetadataText,
+} from './capture-metadata.js'
 import type {
   CancelJobResponse,
   ClearQueueResponse,
@@ -876,6 +884,74 @@ export class JobManager {
     }
   }
 
+  private async prepareJobMetadata(job: JobRecord): Promise<void> {
+    const parsedUrl = new URL(job.request.url)
+    const previousTitle = job.request.title || null
+    const previousDescription = job.request.description || null
+    const previousFaviconUrl = job.request.faviconUrl || null
+
+    const title = normalizeMetadataText(
+      job.request.title,
+      deriveCaptureTitleFromUrl(parsedUrl),
+      240,
+    )
+    const description = normalizeMetadataText(
+      job.request.description,
+      deriveDefaultCaptureDescription(title),
+      1_024,
+    )
+    const defaultFaviconUrl = deriveDefaultFaviconUrl(parsedUrl)
+    let normalizedFaviconUrl = defaultFaviconUrl
+    try {
+      normalizedFaviconUrl = normalizeFaviconUrl(job.request.faviconUrl, parsedUrl)
+    } catch {
+      this.recordProgress(
+        job,
+        'metadata',
+        `Invalid favicon URL in request. Falling back to ${defaultFaviconUrl}.`,
+      )
+    }
+
+    job.request.title = title
+    job.request.description = description
+    job.request.faviconUrl = normalizedFaviconUrl
+
+    const shouldAutoDiscoverFavicon =
+      normalizedFaviconUrl === defaultFaviconUrl ||
+      previousFaviconUrl === null ||
+      previousFaviconUrl.trim().length === 0
+
+    if (shouldAutoDiscoverFavicon) {
+      const discoveredFaviconUrl = await discoverFaviconUrlFromWebsite(job.request.url)
+      if (discoveredFaviconUrl) {
+        try {
+          const normalizedDiscoveredFavicon = normalizeFaviconUrl(
+            discoveredFaviconUrl,
+            parsedUrl,
+          )
+          if (normalizedDiscoveredFavicon !== normalizedFaviconUrl) {
+            job.request.faviconUrl = normalizedDiscoveredFavicon
+            this.recordProgress(
+              job,
+              'metadata',
+              `Detected site favicon: ${normalizedDiscoveredFavicon}`,
+            )
+          }
+        } catch {
+          // Keep validated fallback URL when discovery returns an invalid target.
+        }
+      }
+    }
+
+    if (
+      previousTitle !== job.request.title ||
+      previousDescription !== job.request.description ||
+      previousFaviconUrl !== job.request.faviconUrl
+    ) {
+      this.schedulePersist()
+    }
+  }
+
   private captureResumeMetadata(job: JobRecord, line: string): void {
     const checkpointMatch = checkpointPattern.exec(line)
     if (checkpointMatch?.[1]) {
@@ -1189,6 +1265,7 @@ export class JobManager {
     }
 
     const retries = Math.max(0, job.request.crawl.limits.retries)
+    await this.prepareJobMetadata(job)
     if (job.outputDirectory !== job.targetOutputDirectory) {
       this.recordProgress(
         job,
@@ -1216,6 +1293,18 @@ export class JobManager {
             errorMessage: null,
           })
           this.recordProgress(job, 'paused', 'Job paused. Resume when ready.', attempt)
+          await this.flushPersistNow()
+          return
+        }
+
+        const hasKnownCheckpoint = Boolean(job.resumeState.checkpointPath)
+        if (!hasKnownCheckpoint && attempt === 1) {
+          this.recordProgress(
+            job,
+            'pause',
+            'Pause requested before checkpoint was available. Waiting for crawler state save...',
+            attempt,
+          )
         } else {
           const message =
             'Pause request completed but no checkpoint was confirmed. Retry pause after crawler state has been saved.'
@@ -1225,9 +1314,9 @@ export class JobManager {
           })
           this.recordProgress(job, 'failed', message, attempt)
           await this.cleanupTemporaryDirectory(job)
+          await this.flushPersistNow()
+          return
         }
-        await this.flushPersistNow()
-        return
       }
 
       job.summary.attempt = attempt

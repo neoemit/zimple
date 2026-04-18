@@ -2,6 +2,12 @@ import net from 'node:net'
 import { URL } from 'node:url'
 import type { CrawlOptions, StartJobRequest } from './types.js'
 import { defaultCrawlOptions } from './defaults.js'
+import {
+  deriveCaptureTitleFromUrl,
+  deriveDefaultCaptureDescription,
+  normalizeFaviconUrl,
+  normalizeMetadataText,
+} from './capture-metadata.js'
 
 const isPrivateIPv4 = (host: string): boolean => {
   const segments = host.split('.').map((segment) => Number.parseInt(segment, 10))
@@ -171,6 +177,13 @@ export const normalizeStartJobRequest = (
 } => {
   const validatedUrl = validatePublicUrl(request.url)
   const normalizedCrawl = normalizeCrawlOptions(request.crawl)
+  const title = normalizeMetadataText(request.title, deriveCaptureTitleFromUrl(validatedUrl), 240)
+  const description = normalizeMetadataText(
+    request.description,
+    deriveDefaultCaptureDescription(title),
+    1_024,
+  )
+  const faviconUrl = normalizeFaviconUrl(request.faviconUrl, validatedUrl)
   const preferredName = request.outputFilename?.trim()
     ? sanitizeOutputName(request.outputFilename)
     : defaultOutputFilename(validatedUrl)
@@ -180,6 +193,9 @@ export const normalizeStartJobRequest = (
     normalized: {
       ...request,
       url: validatedUrl.toString(),
+      title,
+      description,
+      faviconUrl,
       crawl: normalizedCrawl,
       outputFilename,
     },

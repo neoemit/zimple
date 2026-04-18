@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { normalizeCrawlOptions, sanitizeOutputName, validatePublicUrl } from './validation.js'
+import {
+  normalizeCrawlOptions,
+  normalizeStartJobRequest,
+  sanitizeOutputName,
+  validatePublicUrl,
+} from './validation.js'
 
 describe('validation', () => {
   it('accepts public http and https urls', () => {
@@ -43,5 +48,52 @@ describe('validation', () => {
     expect(normalized.limits.maxAssetSizeMb).toBe(4096)
     expect(normalized.limits.timeoutMinutes).toBe(5)
     expect(normalized.limits.retries).toBe(10)
+  })
+
+  it('fills metadata defaults from URL host and description template', () => {
+    const normalized = normalizeStartJobRequest({
+      url: 'https://reticulum.network',
+      crawl: normalizeCrawlOptions({
+        respectRobots: false,
+        workers: 2,
+        includePatterns: [],
+        excludePatterns: [],
+        limits: {
+          maxPages: 100,
+          maxDepth: 3,
+          maxTotalSizeMb: 512,
+          maxAssetSizeMb: 10,
+          timeoutMinutes: 60,
+          retries: 1,
+        },
+      }),
+    })
+
+    expect(normalized.normalized.title).toBe('Reticulum Network')
+    expect(normalized.normalized.description).toBe('Offline version of Reticulum Network')
+    expect(normalized.normalized.faviconUrl).toBe('https://reticulum.network/favicon.ico')
+  })
+
+  it('rejects invalid favicon URLs', () => {
+    expect(() =>
+      normalizeStartJobRequest({
+        url: 'https://example.org',
+        faviconUrl: 'ftp://example.org/favicon.ico',
+        crawl: normalizeCrawlOptions({
+          respectRobots: false,
+          workers: 2,
+          includePatterns: [],
+          excludePatterns: [],
+          limits: {
+            maxPages: 100,
+            maxDepth: 3,
+            maxTotalSizeMb: 512,
+            maxAssetSizeMb: 10,
+            timeoutMinutes: 60,
+            retries: 1,
+          },
+        }),
+      }),
+    ).toThrow(/Favicon URL must use/)
   })
 })
