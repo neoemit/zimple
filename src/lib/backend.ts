@@ -1,9 +1,9 @@
-import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 import { defaultCrawlOptions, defaultSettings } from './defaults'
 import type {
+  BackendCapabilities,
   CancelJobResponse,
   JobDetail,
+  JobProgressDeltaResponse,
   JobSummary,
   OpenOutputResponse,
   ProgressEvent,
@@ -14,6 +14,7 @@ import type {
 } from './types'
 
 export interface BackendClient {
+  getCapabilities(): BackendCapabilities
   startJob(request: StartJobRequest): Promise<StartJobResponse>
   listJobs(): Promise<JobSummary[]>
   getJob(jobId: string): Promise<JobDetail>
@@ -28,22 +29,14 @@ export interface BackendClient {
   onRuntimeHealthChanged(handler: (event: RuntimeHealth) => void): Promise<() => void>
 }
 
-type BackendMode = 'tauri' | 'http' | 'mock'
-
-const isTauriRuntime = (): boolean => {
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  return '__TAURI_INTERNALS__' in window
-}
+type BackendMode = 'http' | 'mock'
 
 const getConfiguredBackendMode = (): BackendMode | null => {
   const configured = String(import.meta.env.VITE_ZIMPLE_BACKEND ?? '')
     .trim()
     .toLowerCase()
 
-  if (configured === 'tauri' || configured === 'http' || configured === 'mock') {
+  if (configured === 'http' || configured === 'mock') {
     return configured
   }
   return null
@@ -100,6 +93,14 @@ class MockBackendClient implements BackendClient {
   private readonly runtimeHandlers = new Set<(event: RuntimeHealth) => void>()
   private settings: Settings = { ...defaultSettings }
 
+  getCapabilities(): BackendCapabilities {
+    return {
+      platform: 'mock',
+      outputActionLabel: 'Download Output',
+      supportsDirectoryPicker: false,
+    }
+  }
+
   async startJob(request: StartJobRequest): Promise<StartJobResponse> {
     const now = new Date().toISOString()
     const id = `mock-${Date.now()}`
@@ -139,7 +140,7 @@ class MockBackendClient implements BackendClient {
       const progressEvent: ProgressEvent = {
         jobId: id,
         stage: 'crawl',
-        message: 'Mock crawl is running. Launch with Tauri to run real Docker jobs.',
+        message: 'Mock crawl is running. Start `npm run dev:web:api` for real jobs.',
         timestamp: new Date().toISOString(),
         percent: 50,
       }
@@ -216,7 +217,7 @@ class MockBackendClient implements BackendClient {
       dockerResponsive: false,
       zimitImagePresent: false,
       ready: false,
-      message: 'Running in browser mode. Use `npm run dev:tauri` for real jobs.',
+      message: 'Running in mock mode. Start `npm run dev:web:api` for real jobs.',
     }
 
     this.emitRuntime(health)
@@ -270,73 +271,19 @@ class MockBackendClient implements BackendClient {
   }
 }
 
-class TauriBackendClient implements BackendClient {
-  async startJob(request: StartJobRequest): Promise<StartJobResponse> {
-    return invoke<StartJobResponse>('start_job', { request })
-  }
-
-  async listJobs(): Promise<JobSummary[]> {
-    return invoke<JobSummary[]>('list_jobs')
-  }
-
-  async getJob(jobId: string): Promise<JobDetail> {
-    return invoke<JobDetail>('get_job', { jobId })
-  }
-
-  async cancelJob(jobId: string): Promise<CancelJobResponse> {
-    return invoke<CancelJobResponse>('cancel_job', { jobId })
-  }
-
-  async openOutput(jobId: string): Promise<OpenOutputResponse> {
-    return invoke<OpenOutputResponse>('open_output', { jobId })
-  }
-
-  async getRuntimeHealth(): Promise<RuntimeHealth> {
-    return invoke<RuntimeHealth>('get_runtime_health')
-  }
-
-  async getSettings(): Promise<Settings> {
-    return invoke<Settings>('get_settings')
-  }
-
-  async setSettings(settings: Settings): Promise<Settings> {
-    return invoke<Settings>('set_settings', { settings })
-  }
-
-  async pickOutputDirectory(): Promise<string | null> {
-    return invoke<string | null>('pick_output_directory')
-  }
-
-  async onJobProgress(handler: (event: ProgressEvent) => void): Promise<() => void> {
-    const unlisten = await listen<ProgressEvent>('job:progress', (event) => {
-      handler(event.payload)
-    })
-
-    return unlisten
-  }
-
-  async onJobStateChanged(handler: (event: JobSummary) => void): Promise<() => void> {
-    const unlisten = await listen<JobSummary>('job:state_changed', (event) => {
-      handler(event.payload)
-    })
-
-    return unlisten
-  }
-
-  async onRuntimeHealthChanged(handler: (event: RuntimeHealth) => void): Promise<() => void> {
-    const unlisten = await listen<RuntimeHealth>('runtime:health_changed', (event) => {
-      handler(event.payload)
-    })
-
-    return unlisten
-  }
-}
-
 export class HttpBackendClient implements BackendClient {
   private readonly baseUrl: string
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl
+  }
+
+  getCapabilities(): BackendCapabilities {
+    return {
+      platform: 'http',
+      outputActionLabel: 'Download Output',
+      supportsDirectoryPicker: false,
+    }
   }
 
   async startJob(request: StartJobRequest): Promise<StartJobResponse> {
@@ -391,32 +338,40 @@ export class HttpBackendClient implements BackendClient {
   }
 
   async onJobProgress(handler: (event: ProgressEvent) => void): Promise<() => void> {
-    const lastCounts = new Map<string, number>()
-    return startIntervalPoller(2000, async () => {
-      const jobs = await this.listJobs()
-      const details = await Promise.all(
-        jobs.map(async (job) => ({
-          jobId: job.id,
-          detail: await this.getJob(job.id),
-        })),
-      )
+    const cursors = new Map<string, number>()
 
-      const seen = new Set<string>()
-      for (const { jobId, detail } of details) {
-        seen.add(jobId)
-        const previousCount = lastCounts.get(jobId) ?? 0
-        const nextCount = detail.progress.length
-        if (nextCount > previousCount) {
-          for (const event of detail.progress.slice(previousCount)) {
-            handler(event)
-          }
+    return startIntervalPoller(1500, async () => {
+      const jobs = await this.listJobs()
+
+      const jobsById = new Map(jobs.map((job) => [job.id, job]))
+      const pollingIds = new Set<string>()
+
+      for (const job of jobs) {
+        if (job.state === 'running') {
+          pollingIds.add(job.id)
         }
-        lastCounts.set(jobId, nextCount)
+      }
+      for (const existingId of cursors.keys()) {
+        pollingIds.add(existingId)
       }
 
-      for (const knownId of lastCounts.keys()) {
-        if (!seen.has(knownId)) {
-          lastCounts.delete(knownId)
+      for (const jobId of pollingIds) {
+        const after = cursors.get(jobId) ?? -1
+        let delta: JobProgressDeltaResponse
+        try {
+          delta = await this.getJobProgressDelta(jobId, after, 160)
+        } catch {
+          cursors.delete(jobId)
+          continue
+        }
+        for (const event of delta.progress) {
+          handler(event)
+        }
+        cursors.set(jobId, delta.nextCursor)
+
+        const summary = jobsById.get(jobId)
+        if (!summary || summary.state !== 'running') {
+          cursors.delete(jobId)
         }
       }
     })
@@ -425,7 +380,7 @@ export class HttpBackendClient implements BackendClient {
   async onJobStateChanged(handler: (event: JobSummary) => void): Promise<() => void> {
     const fingerprints = new Map<string, string>()
 
-    return startIntervalPoller(2000, async () => {
+    return startIntervalPoller(3000, async () => {
       const jobs = await this.listJobs()
       const seen = new Set<string>()
 
@@ -485,6 +440,16 @@ export class HttpBackendClient implements BackendClient {
 
     return payload as T
   }
+
+  private async getJobProgressDelta(
+    jobId: string,
+    after: number,
+    limit: number,
+  ): Promise<JobProgressDeltaResponse> {
+    return this.request<JobProgressDeltaResponse>(
+      `/api/jobs/${encodeURIComponent(jobId)}/progress?after=${encodeURIComponent(String(after))}&limit=${encodeURIComponent(String(limit))}`,
+    )
+  }
 }
 
 let backendSingleton: BackendClient | null = null
@@ -495,23 +460,12 @@ export const getBackendClient = (): BackendClient => {
   }
 
   const configuredMode = getConfiguredBackendMode()
-  if (configuredMode === 'http') {
-    backendSingleton = new HttpBackendClient(getHttpApiBaseUrl())
-    return backendSingleton
-  }
-
   if (configuredMode === 'mock') {
     backendSingleton = new MockBackendClient()
     return backendSingleton
   }
 
-  if (isTauriRuntime()) {
-    backendSingleton = new TauriBackendClient()
-    return backendSingleton
-  }
-
-  backendSingleton = new MockBackendClient()
-
+  backendSingleton = new HttpBackendClient(getHttpApiBaseUrl())
   return backendSingleton
 }
 

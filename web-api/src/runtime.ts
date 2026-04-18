@@ -10,10 +10,14 @@ const IDENTITY_ENCODING_DRIVER_SOURCE = `export default async ({ page, data, cra
   await crawler.loadPage(page, data, seed);
 };
 `
+const ZIMIT_CONVERSION_HEADROOM_SECONDS = 15 * 60
+const ATTEMPT_TIMEOUT_HEADROOM_SECONDS = 60
 
 export interface DockerRunResult {
   success: boolean
   errorMessage?: string
+  retryable?: boolean
+  exitCode?: number | null
 }
 
 const dockerEnv = (config: WebApiConfig): NodeJS.ProcessEnv => {
@@ -177,6 +181,86 @@ const dockerMountPath = (value: string): string => {
 const makeDriverPath = (outputDirectory: string, containerName: string): string =>
   path.join(outputDirectory, `.zimple-driver-${containerName}.mjs`)
 
+const filesystemUsagePercent = (targetPath: string): Promise<number | null> =>
+  new Promise((resolve) => {
+    const child = spawn('df', ['-P', targetPath], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    let output = ''
+
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString()
+    })
+    child.on('error', () => {
+      resolve(null)
+    })
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve(null)
+        return
+      }
+
+      const lines = output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+      const usageLine = lines[1]
+      if (!usageLine) {
+        resolve(null)
+        return
+      }
+
+      const percentField = usageLine
+        .split(/\s+/)
+        .find((value) => value.endsWith('%'))
+      if (!percentField) {
+        resolve(null)
+        return
+      }
+
+      const percent = Number.parseInt(percentField.slice(0, -1), 10)
+      resolve(Number.isNaN(percent) ? null : percent)
+    })
+  })
+
+const escapeRegexFragment = (value: string): string =>
+  value.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')
+
+const normalizeScopedPath = (pathname: string): string | null => {
+  if (!pathname || pathname === '/') {
+    return null
+  }
+
+  const trimmed = pathname.replace(/\/+$/, '')
+  if (!trimmed || trimmed === '/') {
+    return null
+  }
+
+  return trimmed
+}
+
+const derivePathPrefixIncludePattern = (targetUrl: string): string | null => {
+  try {
+    const parsed = new URL(targetUrl)
+    const scopedPath = normalizeScopedPath(parsed.pathname)
+    if (!scopedPath) {
+      return null
+    }
+    return `^https?://[^/]+${escapeRegexFragment(scopedPath)}(?:$|[/?#].*)`
+  } catch {
+    return null
+  }
+}
+
+const effectiveIncludePatterns = (request: StartJobRequest): string[] => {
+  if (request.crawl.includePatterns.length > 0) {
+    return request.crawl.includePatterns
+  }
+
+  const derived = derivePathPrefixIncludePattern(request.url)
+  return derived ? [derived] : []
+}
+
 export const containerNameForJob = (jobId: string): string => {
   const suffix = jobId.slice(0, 12)
   return `zimple-${suffix}`
@@ -192,6 +276,12 @@ export const sleepForRetry = (attemptIndex: number): Promise<void> =>
     setTimeout(resolve, retryDelaySeconds(attemptIndex) * 1000)
   })
 
+export const zimitTimeHardLimitSeconds = (timeoutMinutes: number): number =>
+  Math.max(timeoutMinutes, 1) * 60 + ZIMIT_CONVERSION_HEADROOM_SECONDS
+
+export const zimitAttemptTimeoutMs = (timeoutMinutes: number): number =>
+  (zimitTimeHardLimitSeconds(timeoutMinutes) + ATTEMPT_TIMEOUT_HEADROOM_SECONDS) * 1000
+
 export const buildDockerArgs = (
   request: StartJobRequest,
   outputDirectory: string,
@@ -200,8 +290,9 @@ export const buildDockerArgs = (
   zimitImage: string,
   driverContainerPath?: string,
 ): string[] => {
+  const includePatterns = effectiveIncludePatterns(request)
   const sizeHardLimitBytes = Math.max(request.crawl.limits.maxTotalSizeMb, 1) * 1024 * 1024
-  const timeHardLimitSeconds = Math.max(request.crawl.limits.timeoutMinutes, 1) * 60
+  const timeHardLimitSeconds = zimitTimeHardLimitSeconds(request.crawl.limits.timeoutMinutes)
   const args = [
     'run',
     '--rm',
@@ -218,7 +309,7 @@ export const buildDockerArgs = (
     '--output',
     '/output',
     '--scopeType',
-    request.crawl.includePatterns.length > 0 ? 'custom' : 'domain',
+    includePatterns.length > 0 ? 'custom' : 'domain',
     '--diskUtilization',
     '0',
     '-w',
@@ -239,7 +330,7 @@ export const buildDockerArgs = (
     args.push('--driver', driverContainerPath)
   }
 
-  for (const pattern of request.crawl.includePatterns) {
+  for (const pattern of includePatterns) {
     args.push('--scopeIncludeRx', pattern)
   }
   for (const pattern of request.crawl.excludePatterns) {
@@ -404,17 +495,38 @@ export const runZimitOnce = async (
     const exitCode = await waitForExit
 
     if (exitCode === 0) {
-      return { success: true }
+      return { success: true, retryable: false, exitCode }
     }
 
     let message =
       exitCode === null
         ? 'zimit container terminated by signal.'
         : `zimit container failed with exit code ${exitCode}.`
+    let retryable = true
 
     if (exitCode === 2) {
+      retryable = false
       message +=
         ' Exit code 2 usually means zimit rejected one or more options or the output archive name already exists.'
+    }
+    if (exitCode === 3) {
+      retryable = false
+      const usage = await filesystemUsagePercent(outputDirectory)
+      message +=
+        ' Exit code 3 indicates browsertrix stopped due output filesystem space/utilization checks. Browsertrix has a hard stop when output filesystem usage reaches 99% or more.'
+      if (usage !== null) {
+        message += ` Detected output filesystem usage: ${usage}%.`
+      }
+    }
+    if (exitCode === 15) {
+      retryable = false
+      if (recentOutput.some((line) => line.includes('Crawl completed. Starting ZIM conversion'))) {
+        message +=
+          ' Exit code 15 after crawl completion usually means the runtime was interrupted during conversion by a time limit; increase timeout minutes.'
+      } else {
+        message +=
+          ' Exit code 15 indicates the runtime was interrupted (timeout or external stop request).'
+      }
     }
     if (recentOutput.length > 0) {
       message += ` Last output: ${recentOutput.join(' | ')}`
@@ -423,6 +535,8 @@ export const runZimitOnce = async (
     return {
       success: false,
       errorMessage: message,
+      retryable,
+      exitCode,
     }
   } finally {
     await fs.unlink(driverPath).catch(() => undefined)

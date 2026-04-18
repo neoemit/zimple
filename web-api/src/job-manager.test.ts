@@ -156,4 +156,101 @@ describe('JobManager queue behavior', () => {
     await fs.rm(outputDir, { recursive: true, force: true })
     await fs.rm(dataDir, { recursive: true, force: true })
   })
+
+  it('returns incremental progress deltas with cursor + limit', async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-progress-'))
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-data-'))
+
+    const runtime: RuntimeAdapter = {
+      checkRuntimeHealth: async () => ({
+        dockerInstalled: true,
+        dockerResponsive: true,
+        zimitImagePresent: true,
+        ready: true,
+        message: 'ok',
+      }),
+      containerNameForJob: (jobId) => `zimple-${jobId.slice(0, 12)}`,
+      ensureZimitImage: async () => false,
+      runZimitOnce: async (
+        _config,
+        _request,
+        outputDirectory,
+        outputFilename,
+        _containerName,
+        onLog,
+      ) => {
+        onLog('Starting page crawl: https://example.com')
+        onLog('Crawl progress: 1/2 crawled, 1 pending, 0 failed')
+        onLog('Crawl progress: 2/2 crawled, 0 pending, 0 failed')
+        await fs.writeFile(path.join(outputDirectory, `${outputFilename}.zim`), 'zim')
+        return { success: true }
+      },
+      stopContainer: async () => true,
+      sleepForRetry: async () => undefined,
+    }
+
+    const manager = await JobManager.create(makeConfig(outputDir, dataDir), runtime)
+    const { jobId } = await manager.startJob(makeRequest(outputDir))
+    expect(await waitForTerminalState(manager, jobId)).toBe('succeeded')
+
+    const firstDelta = manager.getJobProgressDelta(jobId, -1, 2)
+    expect(firstDelta).not.toBeNull()
+    expect(firstDelta?.progress.length).toBe(2)
+    expect(firstDelta?.nextCursor).toBe(1)
+
+    const secondDelta = manager.getJobProgressDelta(jobId, firstDelta?.nextCursor ?? -1, 2)
+    expect(secondDelta).not.toBeNull()
+    expect(secondDelta?.progress.length).toBeGreaterThan(0)
+    expect((secondDelta?.nextCursor ?? -1) > (firstDelta?.nextCursor ?? -1)).toBe(true)
+
+    const tailDelta = manager.getJobProgressDelta(jobId, secondDelta?.nextCursor ?? -1, 50)
+    expect(tailDelta).not.toBeNull()
+    expect(tailDelta?.progress.length).toBeGreaterThanOrEqual(0)
+
+    await fs.rm(outputDir, { recursive: true, force: true })
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('does not retry non-retryable runtime failures', async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-noretry-'))
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-data-'))
+    let attempts = 0
+
+    const runtime: RuntimeAdapter = {
+      checkRuntimeHealth: async () => ({
+        dockerInstalled: true,
+        dockerResponsive: true,
+        zimitImagePresent: true,
+        ready: true,
+        message: 'ok',
+      }),
+      containerNameForJob: (jobId) => `zimple-${jobId.slice(0, 12)}`,
+      ensureZimitImage: async () => false,
+      runZimitOnce: async () => {
+        attempts += 1
+        return {
+          success: false,
+          errorMessage: 'zimit container failed with exit code 3.',
+          retryable: false,
+          exitCode: 3,
+        }
+      },
+      stopContainer: async () => true,
+      sleepForRetry: async () => undefined,
+    }
+
+    const manager = await JobManager.create(makeConfig(outputDir, dataDir), runtime)
+    const request = makeRequest(outputDir)
+    request.crawl.limits.retries = 3
+    const { jobId } = await manager.startJob(request)
+
+    expect(await waitForTerminalState(manager, jobId)).toBe('failed')
+    const detail = manager.getJob(jobId)
+    expect(detail?.summary.attempt).toBe(1)
+    expect(attempts).toBe(1)
+    expect(detail?.summary.errorMessage).toContain('exit code 3')
+
+    await fs.rm(outputDir, { recursive: true, force: true })
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
 })

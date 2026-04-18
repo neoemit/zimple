@@ -15,8 +15,12 @@ const frontendDistPath = (): string => {
   return path.resolve(currentDir, '..', '..', 'dist')
 }
 
-export const createServer = async (config: WebApiConfig) => {
-  const manager = await JobManager.create(config)
+interface ServerOptions {
+  manager?: JobManager
+}
+
+export const createServer = async (config: WebApiConfig, options?: ServerOptions) => {
+  const manager = options?.manager ?? (await JobManager.create(config))
   const app = Fastify({
     logger: true,
   })
@@ -79,6 +83,23 @@ export const createServer = async (config: WebApiConfig) => {
       return { message: `Unknown job id: ${params.jobId}` }
     }
     return detail
+  })
+
+  app.get('/api/jobs/:jobId/progress', async (request, reply) => {
+    const params = request.params as { jobId: string }
+    const query = request.query as Partial<{ after: string; limit: string }>
+    const parsedAfter = Number.parseInt(query.after ?? '-1', 10)
+    const parsedLimit = Number.parseInt(query.limit ?? '120', 10)
+    const after = Number.isNaN(parsedAfter) ? -1 : parsedAfter
+    const limit = Number.isNaN(parsedLimit) ? 120 : parsedLimit
+
+    const delta = manager.getJobProgressDelta(params.jobId, after, limit)
+    if (!delta) {
+      reply.code(404)
+      return { message: `Unknown job id: ${params.jobId}` }
+    }
+
+    return delta
   })
 
   app.post('/api/jobs/:jobId/cancel', async (request) => {

@@ -10,11 +10,13 @@ import {
   runZimitOnce,
   sleepForRetry,
   stopContainer,
+  zimitAttemptTimeoutMs,
 } from './runtime.js'
 import { loadSettings, saveSettings } from './settings-store.js'
 import { normalizeStartJobRequest, nowIso } from './validation.js'
 import type {
   JobDetail,
+  JobProgressDeltaResponse,
   JobSummary,
   JobState,
   ProgressEvent,
@@ -48,7 +50,12 @@ export interface RuntimeAdapter {
     containerName: string,
     onLog: (line: string) => void,
     onProcess: (child: ChildProcess) => void,
-  ): Promise<{ success: boolean; errorMessage?: string }>
+  ): Promise<{
+    success: boolean
+    errorMessage?: string
+    retryable?: boolean
+    exitCode?: number | null
+  }>
   stopContainer(config: WebApiConfig, containerName: string): Promise<boolean>
   sleepForRetry(attemptIndex: number): Promise<void>
 }
@@ -293,6 +300,36 @@ export class JobManager {
     }
   }
 
+  getJobProgressDelta(
+    jobId: string,
+    afterCursor = -1,
+    limit = 120,
+  ): JobProgressDeltaResponse | null {
+    const job = this.jobs.get(jobId)
+    if (!job) {
+      return null
+    }
+
+    const maxIndex = job.progress.length - 1
+    const safeAfter = Number.isFinite(afterCursor)
+      ? Math.min(Math.max(Math.floor(afterCursor), -1), maxIndex)
+      : -1
+    const safeLimit = Number.isFinite(limit)
+      ? Math.min(Math.max(Math.floor(limit), 1), 500)
+      : 120
+
+    const start = safeAfter + 1
+    const endExclusive = Math.min(start + safeLimit, job.progress.length)
+    const progress = job.progress.slice(start, endExclusive)
+    const nextCursor = progress.length > 0 ? endExclusive - 1 : safeAfter
+
+    return {
+      summary: { ...job.summary },
+      progress: progress.map((event) => ({ ...event })),
+      nextCursor,
+    }
+  }
+
   async cancelJob(jobId: string): Promise<{ cancelled: boolean }> {
     const queuedIndex = this.queue.findIndex((queuedId) => queuedId === jobId)
     if (queuedIndex >= 0) {
@@ -464,14 +501,17 @@ export class JobManager {
       addProgressEvent(job, 'runtime', 'Launching zimit capture engine...', attempt)
 
       const previousZims = listZimFiles(job.outputDirectory)
-      const timeoutMs = (job.request.crawl.limits.timeoutMinutes * 60 + 60) * 1000
+      const timeoutMs = zimitAttemptTimeoutMs(job.request.crawl.limits.timeoutMinutes)
 
       let heartbeatHandle: NodeJS.Timeout | null = null
+      let timeoutHandle: NodeJS.Timeout | null = null
       let timedOut = false
       let result:
         | {
             success: boolean
             errorMessage?: string
+            retryable?: boolean
+            exitCode?: number | null
           }
         | null = null
 
@@ -499,7 +539,7 @@ export class JobManager {
             },
           ),
           new Promise<null>((resolve) => {
-            setTimeout(() => {
+            timeoutHandle = setTimeout(() => {
               timedOut = true
               resolve(null)
             }, timeoutMs)
@@ -508,6 +548,9 @@ export class JobManager {
       } finally {
         if (heartbeatHandle) {
           clearInterval(heartbeatHandle)
+        }
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle)
         }
         job.activeProcess = null
       }
@@ -527,7 +570,7 @@ export class JobManager {
         await this.runtime
           .stopContainer(this.config, job.containerName)
           .catch(() => undefined)
-        const message = `Attempt ${attempt} timed out after ${job.request.crawl.limits.timeoutMinutes} minutes.`
+        const message = `Attempt ${attempt} timed out after ${job.request.crawl.limits.timeoutMinutes} minutes plus conversion headroom.`
         addProgressEvent(job, 'timeout', message, attempt)
 
         if (attempt <= retries) {
@@ -580,6 +623,20 @@ export class JobManager {
           errorMessage: missingOutput,
         })
         addProgressEvent(job, 'failed', 'ZIM build failed', attempt)
+        return
+      }
+
+      if (result.retryable === false) {
+        updateJobState(job, 'failed', {
+          finishedAt: nowIso(),
+          errorMessage: result.errorMessage || 'zimit execution failed.',
+        })
+        addProgressEvent(
+          job,
+          'failed',
+          `Non-retryable runtime failure${result.exitCode !== undefined ? ` (exit ${result.exitCode ?? 'signal'})` : ''}.`,
+          attempt,
+        )
         return
       }
 

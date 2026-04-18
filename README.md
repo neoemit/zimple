@@ -2,106 +2,44 @@
 
 Zimple converts websites into Kiwix-compatible `.zim` archives using OpenZIM `zimit`.
 
-The project now supports two runtime modes:
-
-- **Desktop mode**: Tauri + Rust backend (macOS/Windows/Linux)
-- **Web mode**: Fastify HTTP API + React UI, runnable in Docker on `127.0.0.1`
-
-## Architecture
-
-### Desktop mode (existing path)
+This repository is now **web-only**:
 
 - React + TypeScript frontend (`src/`)
-- Rust/Tauri command backend (`src-tauri/`)
-- Docker `ghcr.io/openzim/zimit` execution from Rust runtime
+- Node/Fastify API (`web-api/src/`)
+- Dockerized runtime using `ghcr.io/openzim/zimit`
 
-### Web mode (new path)
-
-- React + TypeScript frontend (`src/`)
-- Node/Fastify API service (`web-api/src/`)
-- Docker `ghcr.io/openzim/zimit` execution from Node runtime
-- Single worker + FIFO queue + retries/backoff + cancellation
-- Container binds internally to `0.0.0.0`; compose publishes localhost-only (`127.0.0.1`) by default
-
-## Core behavior and policy
+## Core behavior
 
 - Public `http://` and `https://` URLs only
 - Queue with one active job at a time
 - Job states: `queued`, `running`, `succeeded`, `failed`, `cancelled`
-- Output defaults:
-  - Desktop mode: user `Downloads` folder
-  - Web mode (Docker compose): `/Users/thomas/Repos/zimple/bind`
 - Default crawl limits:
-  - Max pages: `2000`
+  - Workers: `4`
+  - Max pages: `1500`
   - Max depth: `5`
-  - Max total size: `2048 MB`
+  - Max total size: `4096 MB`
   - Max asset size: `50 MB`
-  - Timeout: `120 minutes`
-  - Retries: `3`
-- No telemetry; logs remain local
+  - Timeout: `180 minutes`
+  - Retries: `2`
+- No telemetry; logs stay local
 
 ## Prerequisites
 
 - Node.js `22+`
 - npm `11+`
-- Rust stable toolchain (desktop mode)
 - Docker Desktop / Docker Engine
 
-## Local development
+## Run locally with Docker (recommended)
 
-Install dependencies:
-
-```bash
-npm install
-```
-
-### Desktop mode
-
-```bash
-npm run dev:tauri
-```
-
-### Frontend-only (mock backend)
-
-```bash
-npm run dev
-```
-
-### Web API (local, non-Docker)
-
-In one terminal:
-
-```bash
-npm run dev:web:api
-```
-
-In another terminal, run the frontend against the HTTP backend:
-
-```bash
-VITE_ZIMPLE_BACKEND=http \
-VITE_ZIMPLE_API_BASE_URL=http://127.0.0.1:8080 \
-npm run dev
-```
-
-## Run as a local web app via Docker
-
-1. By default, `.zim` files are written to the project bind folder:
-
-```bash
-/Users/thomas/Repos/zimple/bind
-```
-
-The per-job "Override Output Directory" field is optional. If left blank, Zimple uses the configured default output directory for the active runtime mode.
-
-2. Optionally define environment variables in your shell or `.env` (for a different host folder):
+1. Copy env template:
 
 ```bash
 cp .env.example .env
 ```
 
-`docker-compose.web.yml` passes `VITE_ZIMPLE_BACKEND=http` as a build arg by default so the bundled UI talks to the real web API (not mock mode).
+2. Set output folder in `.env` (`ZIMPLE_OUTPUT_DIR`) to an absolute host path.
 
-3. Launch:
+3. Start:
 
 ```bash
 npm run docker:web:up
@@ -119,31 +57,58 @@ http://127.0.0.1:8080
 npm run docker:web:down
 ```
 
-### Why absolute output paths are required in web mode
+## Local development (without docker-compose)
 
-The API container invokes `docker run` via the host Docker socket. The output directory must exist on the host and be mounted into the API container at the **same absolute path** so child zimit containers can write `.zim` files correctly.
+In one terminal:
+
+```bash
+npm run dev:web:api
+```
+
+In another terminal:
+
+```bash
+VITE_ZIMPLE_API_BASE_URL=http://127.0.0.1:8080 npm run dev
+```
+
+Optional frontend-only mock mode:
+
+```bash
+VITE_ZIMPLE_BACKEND=mock npm run dev
+```
+
+## Output folder binding (Linux/macOS)
+
+When running with `docker-compose.web.yml`, set `ZIMPLE_OUTPUT_DIR` to the absolute host folder you want. The compose file mounts that same path into the container so nested `docker run` calls can write outputs correctly.
+
+Example:
+
+```env
+ZIMPLE_OUTPUT_DIR=/home/you/zim-output
+```
 
 ## Environment contracts
 
 ### Frontend env
 
-- `VITE_ZIMPLE_BACKEND`: `tauri` | `http` | `mock`
-- `VITE_ZIMPLE_API_BASE_URL`: base URL for web API (for example `http://127.0.0.1:8080`)
+- `VITE_ZIMPLE_API_BASE_URL`: API base URL (example: `http://127.0.0.1:8080`)
+- `VITE_ZIMPLE_BACKEND`: optional `mock` override for UI-only development
 
 ### Web API env
 
-- `ZIMPLE_OUTPUT_DIR`: absolute host path for `.zim` output (default `/Users/thomas/Repos/zimple/bind`)
+- `ZIMPLE_OUTPUT_DIR`: absolute host path for `.zim` output
 - `ZIMPLE_DOCKER_SOCKET`: Docker socket path (default `/var/run/docker.sock`)
-- `ZIMPLE_BIND_ADDRESS`: API bind address inside container/process (default `0.0.0.0` for Docker web mode)
+- `ZIMPLE_BIND_ADDRESS`: API bind address (default `0.0.0.0` in compose)
 - `ZIMPLE_PORT`: API/UI port (default `8080`)
-- `ZIMPLE_DATA_DIR`: settings persistence directory (default `/data`)
+- `ZIMPLE_DATA_DIR`: settings persistence directory (default `/data` in compose)
 - `ZIMPLE_ZIMIT_IMAGE`: zimit image (default `ghcr.io/openzim/zimit`)
 
-## HTTP API (web mode)
+## HTTP API
 
 - `POST /api/jobs`
 - `GET /api/jobs`
 - `GET /api/jobs/:jobId`
+- `GET /api/jobs/:jobId/progress?after=<cursor>&limit=<n>`
 - `POST /api/jobs/:jobId/cancel`
 - `GET /api/jobs/:jobId/output`
 - `GET /api/runtime-health`
@@ -158,28 +123,15 @@ npm run typecheck
 npm run test
 npm run build
 npm run build:web:api
-cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Troubleshooting
 
-- **`Docker is installed but the daemon is not reachable`**
-  - Start Docker Desktop/Engine and retry.
-- **`zimit container failed with exit code 2`**
-  - Usually invalid zimit args or output naming collision; check job error details.
+- **`failed to fetch` in UI**
+  - Ensure the API is reachable at `VITE_ZIMPLE_API_BASE_URL`.
+  - In docker-compose mode, confirm `zimple-web` is healthy and running.
+- **`zimit container failed with exit code 3`**
+  - Output filesystem utilization is too high for browsertrix/zimit safety checks.
+  - Free space on the mounted output volume or move `ZIMPLE_OUTPUT_DIR` to a less utilized disk.
 - **Web mode job cannot write output**
-  - Confirm `ZIMPLE_OUTPUT_DIR` is absolute, exists on host, and is mounted with the same path in `docker-compose.web.yml`.
-- **UI opens but API calls fail**
-  - Check container health and logs:
-    ```bash
-    docker compose -f docker-compose.web.yml ps
-    docker compose -f docker-compose.web.yml logs -f zimple-web
-    ```
-- **Jobs complete suspiciously fast and no `.zim` appears**
-  - Rebuild web mode so frontend build args are applied: `npm run docker:web:up`.
-
-## Security notes for web mode
-
-- Default exposure is localhost-only (`127.0.0.1`).
-- No auth layer is included in v1 web mode.
-- Do not expose this service to untrusted networks without adding authentication and network controls.
+  - Confirm `ZIMPLE_OUTPUT_DIR` is absolute, exists on host, and is mounted with the same absolute path in compose.

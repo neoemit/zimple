@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { buildDockerArgs, containerNameForJob, retryDelaySeconds } from './runtime.js'
+import {
+  buildDockerArgs,
+  containerNameForJob,
+  retryDelaySeconds,
+  zimitTimeHardLimitSeconds,
+} from './runtime.js'
 import type { StartJobRequest } from './types.js'
 
 const request: StartJobRequest = {
@@ -11,12 +16,12 @@ const request: StartJobRequest = {
     includePatterns: ['/docs'],
     excludePatterns: ['/admin'],
     limits: {
-      maxPages: 2000,
+      maxPages: 1500,
       maxDepth: 5,
-      maxTotalSizeMb: 2048,
+      maxTotalSizeMb: 4096,
       maxAssetSizeMb: 50,
-      timeoutMinutes: 120,
-      retries: 3,
+      timeoutMinutes: 180,
+      retries: 2,
     },
   },
 }
@@ -53,5 +58,57 @@ describe('runtime helpers', () => {
     expect(args).toContain('/docs')
     expect(args).toContain('--scopeExcludeRx')
     expect(args).toContain('/admin')
+    const hardLimitFlagIndex = args.indexOf('--timeHardLimit')
+    expect(hardLimitFlagIndex).toBeGreaterThan(-1)
+    expect(args[hardLimitFlagIndex + 1]).toBe(
+      String(zimitTimeHardLimitSeconds(request.crawl.limits.timeoutMinutes)),
+    )
+  })
+
+  it('auto-locks scope to URL path prefix when include patterns are empty', () => {
+    const args = buildDockerArgs(
+      {
+        ...request,
+        url: 'https://homestead-honey.com/blog',
+        crawl: {
+          ...request.crawl,
+          includePatterns: [],
+        },
+      },
+      '/tmp/zimple-output',
+      'example',
+      'zimple-test',
+      'ghcr.io/openzim/zimit',
+      '/output/.driver.mjs',
+    )
+
+    const scopeTypeIndex = args.indexOf('--scopeType')
+    expect(scopeTypeIndex).toBeGreaterThan(-1)
+    expect(args[scopeTypeIndex + 1]).toBe('custom')
+    expect(args).toContain('--scopeIncludeRx')
+    expect(args).toContain('^https?://[^/]+\\/blog(?:$|[/?#].*)')
+  })
+
+  it('keeps domain scope for root URLs when include patterns are empty', () => {
+    const args = buildDockerArgs(
+      {
+        ...request,
+        url: 'https://homestead-honey.com/',
+        crawl: {
+          ...request.crawl,
+          includePatterns: [],
+        },
+      },
+      '/tmp/zimple-output',
+      'example',
+      'zimple-test',
+      'ghcr.io/openzim/zimit',
+      '/output/.driver.mjs',
+    )
+
+    const scopeTypeIndex = args.indexOf('--scopeType')
+    expect(scopeTypeIndex).toBeGreaterThan(-1)
+    expect(args[scopeTypeIndex + 1]).toBe('domain')
+    expect(args).not.toContain('--scopeIncludeRx')
   })
 })

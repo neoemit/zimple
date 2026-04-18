@@ -31,10 +31,6 @@ dist-ssr/
 coverage/
 *.tsbuildinfo
 
-# Rust / Tauri
-src-tauri/target/
-src-tauri/**/*.pdb
-
 # Web API build output and local data
 web-api/dist/
 .zimple-web-data/

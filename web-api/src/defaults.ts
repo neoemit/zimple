@@ -7,12 +7,12 @@ export const defaultCrawlOptions: CrawlOptions = {
   includePatterns: [],
   excludePatterns: [],
   limits: {
-    maxPages: 2000,
+    maxPages: 1500,
     maxDepth: 5,
-    maxTotalSizeMb: 2048,
+    maxTotalSizeMb: 4096,
     maxAssetSizeMb: 50,
-    timeoutMinutes: 120,
-    retries: 3,
+    timeoutMinutes: 180,
+    retries: 2,
   },
 }
 

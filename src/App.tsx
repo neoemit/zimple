@@ -1,161 +1,64 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import {
-  Plus, Settings as SettingsIcon, FolderOpen, PlayCircle, XCircle,
-  X, CheckCircle, Loader2
-} from 'lucide-react'
 import './App.css'
+import AppHeader from './components/AppHeader'
+import AppSettingsModal from './components/AppSettingsModal'
+import CaptureSettingsModal from './components/CaptureSettingsModal'
+import CreateJobModal from './components/CreateJobModal'
+import JobDetailPane from './components/JobDetailPane'
+import QueuePane from './components/QueuePane'
+import ToastStack from './components/ToastStack'
+import { useMediaQuery } from './hooks/useMediaQuery'
 import {
   createDefaultStartJobRequest,
   getBackendClient,
   type BackendClient,
 } from './lib/backend'
 import { defaultSettings } from './lib/defaults'
+import { summarizeErrorForToast } from './lib/errorPresentation'
+import { compareJobsByCreated } from './lib/presentation'
 import type {
-  CrawlOptions,
   JobDetail,
-  ProgressEvent,
   JobSummary,
+  ProgressEvent,
   RuntimeHealth,
   Settings,
   StartJobRequest,
+  ThemeMode,
 } from './lib/types'
 
 interface AppProps {
   backend?: BackendClient
 }
 
-type ThemeMode = 'system' | 'light' | 'dark'
-
 const themeStorageKey = 'zimple.theme.mode'
 
-const toPatternText = (patterns: string[]): string => patterns.join('\n')
+const isTerminalState = (state: JobSummary['state']): boolean =>
+  state === 'succeeded' || state === 'failed' || state === 'cancelled'
 
-const fromPatternText = (value: string): string[] =>
-  value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
+const appendProgressToDetail = (
+  current: JobDetail,
+  event: ProgressEvent,
+): JobDetail => {
+  const lastProgress = current.progress[current.progress.length - 1]
+  const isDuplicateProgress =
+    Boolean(lastProgress) &&
+    lastProgress.timestamp === event.timestamp &&
+    lastProgress.stage === event.stage &&
+    lastProgress.message === event.message &&
+    lastProgress.attempt === event.attempt
 
-const formatTimestamp = (value?: string | null): string => {
-  if (!value) {
-    return '-'
+  if (isDuplicateProgress) {
+    return current
   }
 
-  return new Date(value).toLocaleString()
-}
-
-const statusLabel = (state: JobSummary['state']): string =>
-  state.charAt(0).toUpperCase() + state.slice(1)
-
-const compareJobsByCreated = (a: JobSummary, b: JobSummary): number =>
-  b.createdAt.localeCompare(a.createdAt)
-
-interface CrawlSnapshot {
-  currentPage: string | null
-  processed: number | null
-  total: number | null
-  pending: number | null
-  failed: number | null
-  percent: number | null
-  statusText: string
-  isTerminal: boolean
-}
-
-const crawlProgressPattern =
-  /Crawl progress:\s*(\d+)\s*\/\s*(\d+)\s*crawled,\s*(\d+)\s*pending,\s*(\d+)\s*failed/i
-const pageStartPattern = /^Starting page crawl:\s*(.+)$/i
-
-const deriveCrawlSnapshot = (
-  progress: ProgressEvent[],
-  summary: JobSummary,
-): CrawlSnapshot => {
-  let currentPage: string | null = null
-  let processed: number | null = null
-  let total: number | null = null
-  let pending: number | null = null
-  let failed: number | null = null
-  let percent: number | null = null
-
-  for (let index = progress.length - 1; index >= 0; index -= 1) {
-    const event = progress[index]
-
-    if (percent === null && typeof event.percent === 'number') {
-      percent = Math.max(0, Math.min(100, event.percent))
-    }
-
-    if (!currentPage) {
-      const pageMatch = pageStartPattern.exec(event.message)
-      if (pageMatch?.[1]) {
-        currentPage = pageMatch[1].trim()
-      }
-    }
-
-    if (processed === null || total === null || pending === null || failed === null) {
-      const match = crawlProgressPattern.exec(event.message)
-      if (match) {
-        processed = Number(match[1])
-        total = Number(match[2])
-        pending = Number(match[3])
-        failed = Number(match[4])
-      }
-    }
-
-    if (
-      currentPage &&
-      processed !== null &&
-      total !== null &&
-      pending !== null &&
-      failed !== null &&
-      percent !== null
-    ) {
-      break
-    }
-  }
-
-  if (percent === null && processed !== null && total !== null && total > 0) {
-    percent = Math.max(0, Math.min(100, (processed / total) * 100))
-  }
-
-  const isTerminal =
-    summary.state === 'succeeded' ||
-    summary.state === 'failed' ||
-    summary.state === 'cancelled'
-
-  if (summary.state === 'succeeded') {
-    percent = 100
-  }
-
-  if (percent === null && isTerminal) {
-    percent = summary.state === 'succeeded' ? 100 : 0
-  }
-
-  let statusText = 'Waiting for crawl metrics...'
-  if (summary.state === 'queued') {
-    statusText = 'Queued and waiting for worker slot.'
-  } else if (summary.state === 'running') {
-    if (processed !== null && total !== null) {
-      statusText = `${processed} / ${total} pages processed`
-    } else {
-      statusText = 'Crawling in progress...'
-    }
-  } else if (summary.state === 'succeeded') {
-    statusText = 'Capture completed successfully.'
-  } else if (summary.state === 'failed') {
-    statusText = 'Capture failed.'
-  } else if (summary.state === 'cancelled') {
-    statusText = 'Capture was cancelled.'
-  }
+  const lastLog = current.logs[current.logs.length - 1]
+  const shouldAppendLog = lastLog !== event.message
 
   return {
-    currentPage,
-    processed,
-    total,
-    pending,
-    failed,
-    percent,
-    statusText,
-    isTerminal,
+    ...current,
+    progress: [...current.progress, event],
+    logs: shouldAppendLog ? [...current.logs, event.message] : current.logs,
   }
 }
 
@@ -182,15 +85,31 @@ function App({ backend = getBackendClient() }: AppProps) {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [selectedJob, setSelectedJob] = useState<JobDetail | null>(null)
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth | null>(null)
-  const [showCreateJob, setShowCreateJob] = useState<boolean>(false)
-  const [showAdvanced, setShowAdvanced] = useState<boolean>(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState<boolean>(false)
   const [savingSettings, setSavingSettings] = useState<boolean>(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode)
+  const [showCreateJobModal, setShowCreateJobModal] = useState<boolean>(false)
+  const [showCaptureSettingsModal, setShowCaptureSettingsModal] = useState<boolean>(false)
+  const [showAppSettingsModal, setShowAppSettingsModal] = useState<boolean>(false)
+  const [queueRailOpen, setQueueRailOpen] = useState<boolean>(false)
+
   const autoOpenedJobs = useRef(new Set<string>())
   const knownJobStates = useRef<Map<string, JobSummary['state']>>(new Map())
+
+  const formatErrorMessage = useCallback((error: unknown): string => {
+    if (error instanceof Error) {
+      return summarizeErrorForToast(error.message)
+    }
+
+    return summarizeErrorForToast(String(error))
+  }, [])
+
+  const capabilities = useMemo(() => backend.getCapabilities(), [backend])
+
+  const isSmallViewport = useMediaQuery('(max-width: 1099px)')
+  const usesQueueOverlay = isSmallViewport
 
   const activeJobCount = useMemo(
     () => jobs.filter((job) => job.state === 'running').length,
@@ -201,6 +120,17 @@ function App({ backend = getBackendClient() }: AppProps) {
     () => jobs.filter((job) => job.state === 'queued').length,
     [jobs],
   )
+
+  const hasOpenModal = showCreateJobModal || showCaptureSettingsModal || showAppSettingsModal
+
+  useEffect(() => {
+    if (usesQueueOverlay) {
+      setQueueRailOpen(false)
+      return
+    }
+
+    setQueueRailOpen(true)
+  }, [usesQueueOverlay])
 
   const refreshJobs = useCallback(async (): Promise<void> => {
     const nextJobs = await backend.listJobs()
@@ -231,7 +161,6 @@ function App({ backend = getBackendClient() }: AppProps) {
 
   useEffect(() => {
     let mounted = true
-    let intervalId: number | null = null
 
     const bootstrap = async (): Promise<void> => {
       try {
@@ -252,7 +181,7 @@ function App({ backend = getBackendClient() }: AppProps) {
           return
         }
 
-        setErrorMessage((error as Error).message)
+        setErrorMessage(formatErrorMessage(error))
       }
     }
 
@@ -262,14 +191,18 @@ function App({ backend = getBackendClient() }: AppProps) {
 
     const registerListeners = async (): Promise<void> => {
       unlisteners.push(
-        await backend.onJobProgress(async (event) => {
+        await backend.onJobProgress((event) => {
           if (!mounted) {
             return
           }
 
-          if (selectedJobId && event.jobId === selectedJobId) {
-            await refreshSelectedJob(selectedJobId)
-          }
+          setSelectedJob((current) => {
+            if (!current || current.summary.id !== event.jobId) {
+              return current
+            }
+
+            return appendProgressToDetail(current, event)
+          })
         }),
       )
 
@@ -292,7 +225,18 @@ function App({ backend = getBackendClient() }: AppProps) {
             return merged
           })
 
-          if (selectedJobId === nextSummary.id) {
+          setSelectedJob((current) => {
+            if (!current || current.summary.id !== nextSummary.id) {
+              return current
+            }
+
+            return {
+              ...current,
+              summary: { ...nextSummary },
+            }
+          })
+
+          if (selectedJobId === nextSummary.id && isTerminalState(nextSummary.state)) {
             await refreshSelectedJob(nextSummary.id)
           }
 
@@ -320,25 +264,15 @@ function App({ backend = getBackendClient() }: AppProps) {
 
     void registerListeners()
 
-    intervalId = window.setInterval(() => {
-      void refreshJobs()
-      void refreshRuntimeHealth()
-      if (selectedJobId) {
-        void refreshSelectedJob(selectedJobId)
-      }
-    }, 5000)
-
     return () => {
       mounted = false
-      if (intervalId !== null) {
-        window.clearInterval(intervalId)
-      }
       for (const unlisten of unlisteners) {
         unlisten()
       }
     }
   }, [
     backend,
+    formatErrorMessage,
     refreshJobs,
     refreshRuntimeHealth,
     refreshSelectedJob,
@@ -354,6 +288,20 @@ function App({ backend = getBackendClient() }: AppProps) {
 
     void refreshSelectedJob(selectedJobId)
   }, [refreshSelectedJob, selectedJobId])
+
+  useEffect(() => {
+    if (!selectedJobId || !selectedJob || selectedJob.summary.state !== 'running') {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshSelectedJob(selectedJobId)
+    }, 20000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [refreshSelectedJob, selectedJob, selectedJobId])
 
   useEffect(() => {
     const seenIds = new Set<string>()
@@ -451,19 +399,29 @@ function App({ backend = getBackendClient() }: AppProps) {
   }, [themeMode])
 
   useEffect(() => {
-    if (!showAdvanced && !showCreateJob) {
+    if (!hasOpenModal) {
       return
     }
 
     document.body.classList.add('modal-open')
 
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        if (showAdvanced) {
-          setShowAdvanced(false)
-        } else if (showCreateJob) {
-          setShowCreateJob(false)
-        }
+      if (event.key !== 'Escape') {
+        return
+      }
+
+      if (showCaptureSettingsModal) {
+        setShowCaptureSettingsModal(false)
+        return
+      }
+
+      if (showAppSettingsModal) {
+        setShowAppSettingsModal(false)
+        return
+      }
+
+      if (showCreateJobModal) {
+        setShowCreateJobModal(false)
       }
     }
 
@@ -473,51 +431,54 @@ function App({ backend = getBackendClient() }: AppProps) {
       document.body.classList.remove('modal-open')
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [showAdvanced, showCreateJob])
+  }, [hasOpenModal, showAppSettingsModal, showCaptureSettingsModal, showCreateJobModal])
 
-  const onUrlChange = (value: string): void => {
-    setRequest((current) => ({ ...current, url: value }))
-  }
+  useEffect(() => {
+    if (!usesQueueOverlay || !queueRailOpen || hasOpenModal) {
+      return
+    }
 
-  const updateCrawlOptions = (nextCrawl: CrawlOptions): void => {
-    setRequest((current) => ({ ...current, crawl: nextCrawl }))
-  }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setQueueRailOpen(false)
+      }
+    }
 
-  const updateLimits = (
-    field: keyof CrawlOptions['limits'],
-    value: number,
-  ): void => {
-    updateCrawlOptions({
-      ...request.crawl,
-      limits: {
-        ...request.crawl.limits,
-        [field]: value,
-      },
-    })
-  }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [hasOpenModal, queueRailOpen, usesQueueOverlay])
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
 
     setErrorMessage(null)
     setInfoMessage(null)
-
     setSubmitting(true)
 
     try {
-      const outputDirectory = request.outputDirectory?.trim() || null
       const response = await backend.startJob({
         ...request,
-        outputDirectory,
+        outputDirectory: null,
       })
 
       setInfoMessage(`Job queued: ${response.jobId}`)
-      setRequest((current) => ({ ...current, url: '' }))
+      setRequest((current) => ({
+        ...current,
+        url: '',
+        outputFilename: null,
+        outputDirectory: null,
+      }))
       await refreshJobs()
       setSelectedJobId(response.jobId)
-      setShowCreateJob(false)
+      setShowCaptureSettingsModal(false)
+      setShowCreateJobModal(false)
+      if (usesQueueOverlay) {
+        setQueueRailOpen(false)
+      }
     } catch (error) {
-      setErrorMessage((error as Error).message)
+      setErrorMessage(formatErrorMessage(error))
     } finally {
       setSubmitting(false)
     }
@@ -534,7 +495,7 @@ function App({ backend = getBackendClient() }: AppProps) {
         await refreshSelectedJob(jobId)
       }
     } catch (error) {
-      setErrorMessage((error as Error).message)
+      setErrorMessage(formatErrorMessage(error))
     }
   }
 
@@ -545,7 +506,7 @@ function App({ backend = getBackendClient() }: AppProps) {
         setErrorMessage('No output file is available for this job yet.')
       }
     } catch (error) {
-      setErrorMessage((error as Error).message)
+      setErrorMessage(formatErrorMessage(error))
     }
   }
 
@@ -562,7 +523,7 @@ function App({ backend = getBackendClient() }: AppProps) {
       setSettings(nextSettings)
       setInfoMessage('Settings saved.')
     } catch (error) {
-      setErrorMessage((error as Error).message)
+      setErrorMessage(formatErrorMessage(error))
     } finally {
       setSavingSettings(false)
     }
@@ -577,41 +538,32 @@ function App({ backend = getBackendClient() }: AppProps) {
         setSettingsDraft(selected)
       }
     } catch (error) {
-      setErrorMessage((error as Error).message)
+      setErrorMessage(formatErrorMessage(error))
     }
   }
 
-  const crawlSnapshot = useMemo(() => {
-    if (!selectedJob) {
-      return null
+  const openCreateJobModal = useCallback((): void => {
+    setShowAppSettingsModal(false)
+    setShowCreateJobModal(true)
+  }, [])
+
+  const closeCreateJobModal = useCallback((): void => {
+    setShowCreateJobModal(false)
+    setShowCaptureSettingsModal(false)
+  }, [])
+
+  const openAppSettingsModal = useCallback((): void => {
+    setShowCreateJobModal(false)
+    setShowCaptureSettingsModal(false)
+    setShowAppSettingsModal(true)
+  }, [])
+
+  const handleSelectJob = useCallback((jobId: string): void => {
+    setSelectedJobId(jobId)
+    if (usesQueueOverlay) {
+      setQueueRailOpen(false)
     }
-
-    return deriveCrawlSnapshot(selectedJob.progress, selectedJob.summary)
-  }, [selectedJob])
-
-  const crawlProgress = useMemo(() => {
-    if (!selectedJob || !crawlSnapshot) {
-      return {
-        value: 0,
-        indeterminate: false,
-      }
-    }
-
-    const value =
-      crawlSnapshot.percent !== null
-        ? Math.round(crawlSnapshot.percent)
-        : selectedJob.summary.state === 'succeeded'
-          ? 100
-          : 0
-
-    return {
-      value: Math.max(0, Math.min(100, value)),
-      indeterminate:
-        selectedJob.summary.state === 'running' &&
-        crawlSnapshot.percent === null &&
-        !crawlSnapshot.isTerminal,
-    }
-  }, [crawlSnapshot, selectedJob])
+  }, [usesQueueOverlay])
 
   const toasts = useMemo(
     () =>
@@ -638,536 +590,100 @@ function App({ backend = getBackendClient() }: AppProps) {
 
   return (
     <div className="app-shell">
-      <section className="top-row" aria-label="app-overview">
-        <header className="hero">
-          <p className="eyebrow">Offline Publishing Studio</p>
-          <h1>Zimple</h1>
-          <p className="lead">
-            Convert websites into Kiwix-ready ZIM files with a queued, policy-aware
-            desktop pipeline.
-          </p>
-        </header>
+      <AppHeader
+        runtimeHealth={runtimeHealth}
+        activeJobCount={activeJobCount}
+        queuedJobCount={queuedJobCount}
+        showQueueToggle={usesQueueOverlay}
+        queueOpen={queueRailOpen}
+        onCreateJob={openCreateJobModal}
+        onToggleQueue={() => setQueueRailOpen((current) => !current)}
+        onOpenSettings={openAppSettingsModal}
+      />
 
-        <section className="panel status-strip" aria-label="runtime-status">
-          <div className="status-item">
-            <p className="label">Runtime</p>
-            <p>
-              {runtimeHealth?.ready
-                ? 'Ready'
-                : runtimeHealth?.message ?? 'Checking Docker + zimit runtime...'}
-            </p>
+      <section className={`workspace ${usesQueueOverlay ? 'overlay-mode' : ''}`}>
+        {usesQueueOverlay && queueRailOpen && (
+          <button
+            type="button"
+            className="queue-overlay-backdrop"
+            aria-label="Close Jobs"
+            onClick={() => setQueueRailOpen(false)}
+          />
+        )}
+
+        {(!usesQueueOverlay || queueRailOpen) && (
+          <div
+            className={`workspace-slot queue-slot ${usesQueueOverlay ? 'overlay-rail open' : ''}`}
+          >
+            <QueuePane
+              jobs={jobs}
+              selectedJobId={selectedJobId}
+              outputActionLabel={capabilities.outputActionLabel}
+              onCreateJob={openCreateJobModal}
+              onSelectJob={handleSelectJob}
+              onCancelJob={(jobId) => void onCancelJob(jobId)}
+              onOpenOutput={(jobId) => void onOpenOutput(jobId)}
+              showCloseButton={usesQueueOverlay}
+              onClose={() => setQueueRailOpen(false)}
+            />
           </div>
-          <div className="status-item">
-            <p className="label">Active</p>
-            <p>{activeJobCount}</p>
-          </div>
-          <div className="status-item">
-            <p className="label">Queued</p>
-            <p>{queuedJobCount}</p>
-          </div>
-        </section>
+        )}
+
+        <div className="workspace-slot detail-slot">
+          <JobDetailPane
+            selectedJob={selectedJob}
+            outputActionLabel={capabilities.outputActionLabel}
+            onCancelJob={(jobId) => void onCancelJob(jobId)}
+            onOpenOutput={(jobId) => void onOpenOutput(jobId)}
+          />
+        </div>
       </section>
 
-      <div className="workspace workspace-single">
-        <section className="panel jobs-panel">
-          <div className="section-head">
-            <h2>Job Queue</h2>
-            <div className="section-actions">
-              <button type="button" onClick={() => setShowCreateJob(true)}>
-                <Plus size={18} /> Add Job
-              </button>
-            </div>
-          </div>
-
-          <div className="jobs-layout">
-            <ul className="job-list">
-              {jobs.length === 0 && (
-                <li className="empty empty-block">
-                  <p>No jobs yet.</p>
-                  <button type="button" onClick={() => setShowCreateJob(true)}>
-                    <Plus size={18} /> Add Your First Job
-                  </button>
-                </li>
-              )}
-              {jobs.map((job) => (
-                <li key={job.id}>
-                  <button
-                    className={`job-item ${selectedJobId === job.id ? 'selected' : ''}`}
-                    onClick={() => setSelectedJobId(job.id)}
-                    type="button"
-                  >
-                    <span className={`badge ${job.state}`}>{statusLabel(job.state)}</span>
-                    <strong>{job.url}</strong>
-                    <small>Created: {formatTimestamp(job.createdAt)}</small>
-                  </button>
-                  <div className="job-actions">
-                    {(job.state === 'queued' || job.state === 'running') && (
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => void onCancelJob(job.id)}
-                      >
-                        <XCircle size={16} /> Cancel
-                      </button>
-                    )}
-                    {job.state === 'succeeded' && (
-                      <button type="button" onClick={() => void onOpenOutput(job.id)}>
-                        <FolderOpen size={16} /> Open Output
-                      </button>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-
-            <article className="job-detail" aria-live="polite">
-              {!selectedJob && <p className="empty">Select a job to inspect details.</p>}
-              {selectedJob && (
-                <>
-                  <div className="job-detail-head">
-                    <h3 className="job-url">{selectedJob.summary.url}</h3>
-                    <div className="job-meta">
-                      <span className={`badge ${selectedJob.summary.state}`}>
-                        {statusLabel(selectedJob.summary.state)}
-                      </span>
-                      <p>Attempt: {selectedJob.summary.attempt}</p>
-                      <p>Started: {formatTimestamp(selectedJob.summary.startedAt)}</p>
-                      <p>Finished: {formatTimestamp(selectedJob.summary.finishedAt)}</p>
-                      <p>Output: {selectedJob.summary.outputPath ?? 'Not generated yet'}</p>
-                    </div>
-                    {selectedJob.summary.errorMessage && (
-                      <p className="error">Error: {selectedJob.summary.errorMessage}</p>
-                    )}
-                  </div>
-
-                  {crawlSnapshot && (
-                    <section className="crawl-status-panel" aria-label="crawl-status">
-                      <div className="crawl-status-head">
-                        <h4>Crawl Status</h4>
-                        <span className={`badge ${selectedJob.summary.state}`}>
-                          {statusLabel(selectedJob.summary.state)}
-                        </span>
-                      </div>
-                      <p className="crawl-status-text">{crawlSnapshot.statusText}</p>
-
-                      <div
-                        className="progress-track"
-                        role="progressbar"
-                        aria-label="Crawl completion"
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={crawlProgress.value}
-                        aria-valuetext={`${crawlProgress.value}% complete`}
-                      >
-                        <span
-                          className={`progress-fill ${crawlProgress.indeterminate ? 'indeterminate' : ''}`}
-                          style={
-                            !crawlProgress.indeterminate
-                              ? {
-                                  width: `${crawlProgress.value}%`,
-                                }
-                              : undefined
-                          }
-                        />
-                      </div>
-
-                      <div className="crawl-stats-grid">
-                        <p>
-                          <span>Processed</span>
-                          <strong>
-                            {crawlSnapshot.processed !== null ? crawlSnapshot.processed : '-'}
-                          </strong>
-                        </p>
-                        <p>
-                          <span>Total</span>
-                          <strong>
-                            {crawlSnapshot.total !== null ? crawlSnapshot.total : '-'}
-                          </strong>
-                        </p>
-                        <p>
-                          <span>Pending</span>
-                          <strong>
-                            {crawlSnapshot.pending !== null ? crawlSnapshot.pending : '-'}
-                          </strong>
-                        </p>
-                        <p>
-                          <span>Failed</span>
-                          <strong>
-                            {crawlSnapshot.failed !== null ? crawlSnapshot.failed : '-'}
-                          </strong>
-                        </p>
-                      </div>
-
-                      <p className="current-page">
-                        Current page:{' '}
-                        <strong>{crawlSnapshot.currentPage ?? 'Detecting current page...'}</strong>
-                      </p>
-                    </section>
-                  )}
-                </>
-              )}
-            </article>
-          </div>
-        </section>
-      </div>
-
-      {showCreateJob && (
-        <div
-          className="modal-backdrop create-job-backdrop"
-          role="presentation"
-          onClick={() => setShowCreateJob(false)}
-        >
-          <section
-            className="modal-card create-job-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="create-job-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-header">
-              <h2 id="create-job-title">New Capture Job</h2>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => setShowCreateJob(false)}
-              >
-                <X size={18} /> Close
-              </button>
-            </div>
-
-            <div className="modal-content">
-              <form className="job-form" onSubmit={(event) => void onSubmit(event)}>
-                <label>
-                  Website URL
-                  <input
-                    aria-label="website-url"
-                    type="url"
-                    placeholder="https://example.com"
-                    value={request.url}
-                    onChange={(event) => onUrlChange(event.target.value)}
-                    required
-                  />
-                </label>
-
-                <div className="job-grid">
-                  <label>
-                    Output Filename (optional)
-                    <input
-                      aria-label="output-filename"
-                      type="text"
-                      placeholder="example-archive"
-                      value={request.outputFilename ?? ''}
-                      onChange={(event) =>
-                        setRequest((current) => ({
-                          ...current,
-                          outputFilename: event.target.value || null,
-                        }))
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Override Output Directory (optional)
-                    <input
-                      aria-label="output-directory-override"
-                      type="text"
-                      placeholder={settings.outputDirectory ?? 'Uses default output directory'}
-                      value={request.outputDirectory ?? ''}
-                      onChange={(event) =>
-                        setRequest((current) => ({
-                          ...current,
-                          outputDirectory: event.target.value || null,
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-
-                <div className="form-actions">
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => setShowCreateJob(false)}
-                  >
-                    <XCircle size={18} /> Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => setShowAdvanced(true)}
-                  >
-                    <SettingsIcon size={18} /> Show Advanced
-                  </button>
-                  <button type="submit" disabled={submitting}>
-                    {submitting ? (
-                      <><Loader2 size={18} className="spin" /> Queueing...</>
-                    ) : (
-                      <><PlayCircle size={18} /> Start Processing</>
-                    )}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </section>
-        </div>
+      {showCreateJobModal && (
+        <CreateJobModal
+          request={request}
+          submitting={submitting}
+          setRequest={setRequest}
+          onSubmit={onSubmit}
+          onOpenCaptureSettings={() => setShowCaptureSettingsModal(true)}
+          onClose={closeCreateJobModal}
+        />
       )}
 
-      {showAdvanced && (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setShowAdvanced(false)}
-        >
-          <section
-            className="modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="advanced-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-header">
-              <h2 id="advanced-title">Advanced Capture Controls</h2>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => setShowAdvanced(false)}
-              >
-                <SettingsIcon size={18} /> Hide Advanced
-              </button>
-            </div>
-
-            <div className="modal-content">
-              <div className="advanced" aria-label="advanced-options">
-                <div className="advanced-grid">
-                  <label>
-                    Workers
-                    <input
-                      type="number"
-                      min={1}
-                      max={12}
-                      value={request.crawl.workers}
-                      onChange={(event) =>
-                        updateCrawlOptions({
-                          ...request.crawl,
-                          workers: Number(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Max Pages
-                    <input
-                      type="number"
-                      min={1}
-                      value={request.crawl.limits.maxPages}
-                      onChange={(event) =>
-                        updateLimits('maxPages', Number(event.target.value))
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Max Depth
-                    <input
-                      type="number"
-                      min={1}
-                      value={request.crawl.limits.maxDepth}
-                      onChange={(event) =>
-                        updateLimits('maxDepth', Number(event.target.value))
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Total Size (MB)
-                    <input
-                      type="number"
-                      min={64}
-                      value={request.crawl.limits.maxTotalSizeMb}
-                      onChange={(event) =>
-                        updateLimits('maxTotalSizeMb', Number(event.target.value))
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Per Asset (MB)
-                    <input
-                      type="number"
-                      min={1}
-                      value={request.crawl.limits.maxAssetSizeMb}
-                      onChange={(event) =>
-                        updateLimits('maxAssetSizeMb', Number(event.target.value))
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Timeout (minutes)
-                    <input
-                      type="number"
-                      min={5}
-                      value={request.crawl.limits.timeoutMinutes}
-                      onChange={(event) =>
-                        updateLimits('timeoutMinutes', Number(event.target.value))
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Retries
-                    <input
-                      type="number"
-                      min={0}
-                      max={6}
-                      value={request.crawl.limits.retries}
-                      onChange={(event) =>
-                        updateLimits('retries', Number(event.target.value))
-                      }
-                    />
-                  </label>
-                </div>
-
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={request.crawl.respectRobots}
-                    onChange={(event) =>
-                      updateCrawlOptions({
-                        ...request.crawl,
-                        respectRobots: event.target.checked,
-                      })
-                    }
-                  />
-                  Respect robots.txt by default
-                </label>
-
-                <div className="pattern-grid">
-                  <label>
-                    Include Patterns (one per line)
-                    <textarea
-                      value={toPatternText(request.crawl.includePatterns)}
-                      onChange={(event) =>
-                        updateCrawlOptions({
-                          ...request.crawl,
-                          includePatterns: fromPatternText(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-
-                  <label>
-                    Exclude Patterns (one per line)
-                    <textarea
-                      value={toPatternText(request.crawl.excludePatterns)}
-                      onChange={(event) =>
-                        updateCrawlOptions({
-                          ...request.crawl,
-                          excludePatterns: fromPatternText(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-                </div>
-
-                <div className="advanced-storage">
-                  <h3>Storage Settings</h3>
-                  <div className="settings-row">
-                    <label>
-                      Default Output Directory
-                      <input
-                        aria-label="default-output-directory"
-                        type="text"
-                        value={settingsDraft}
-                        placeholder="Choose where generated .zim files should be saved"
-                        onChange={(event) => setSettingsDraft(event.target.value)}
-                      />
-                    </label>
-                    <div className="settings-actions">
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => void onBrowseDirectory()}
-                      >
-                        <FolderOpen size={18} /> Browse
-                      </button>
-                      <button
-                        type="button"
-                        disabled={savingSettings}
-                        onClick={() => void onSaveSettings()}
-                      >
-                        {savingSettings ? (
-                          <><Loader2 size={18} className="spin" /> Saving...</>
-                        ) : (
-                          <><CheckCircle size={18} /> Save</>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                  <label>
-                    Theme
-                    <select
-                      aria-label="theme-mode"
-                      value={themeMode}
-                      onChange={(event) =>
-                        setThemeMode(event.target.value as ThemeMode)
-                      }
-                    >
-                      <option value="system">System (Default)</option>
-                      <option value="light">Light</option>
-                      <option value="dark">Dark</option>
-                    </select>
-                    <small className="setting-hint">
-                      System follows your OS appearance automatically.
-                    </small>
-                  </label>
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={settings.autoOpenOnSuccess}
-                      onChange={(event) =>
-                        setSettings((current) => ({
-                          ...current,
-                          autoOpenOnSuccess: event.target.checked,
-                        }))
-                      }
-                    />
-                    Auto-open generated ZIM files when a job succeeds
-                  </label>
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
+      {showCaptureSettingsModal && (
+        <CaptureSettingsModal
+          request={request}
+          setRequest={setRequest}
+          onClose={() => setShowCaptureSettingsModal(false)}
+        />
       )}
 
-      {toasts.length > 0 && (
-        <div className="toast-stack" aria-live="polite" aria-atomic="true">
-          {toasts.map((toast) => (
-            <section
-              key={toast.id}
-              className={`toast toast-${toast.type}`}
-              role={toast.type === 'error' ? 'alert' : 'status'}
-            >
-              <p>{toast.text}</p>
-              <button
-                type="button"
-                className="ghost toast-dismiss"
-                onClick={() => {
-                  if (toast.id === 'info') {
-                    setInfoMessage(null)
-                  } else {
-                    setErrorMessage(null)
-                  }
-                }}
-              >
-                <X size={16} />
-              </button>
-            </section>
-          ))}
-        </div>
+      {showAppSettingsModal && (
+        <AppSettingsModal
+          settings={settings}
+          settingsDraft={settingsDraft}
+          themeMode={themeMode}
+          savingSettings={savingSettings}
+          supportsDirectoryPicker={capabilities.supportsDirectoryPicker}
+          setSettings={setSettings}
+          setSettingsDraft={setSettingsDraft}
+          setThemeMode={setThemeMode}
+          onSaveSettings={onSaveSettings}
+          onBrowseDirectory={onBrowseDirectory}
+          onClose={() => setShowAppSettingsModal(false)}
+        />
       )}
+
+      <ToastStack
+        toasts={toasts}
+        onDismiss={(id) => {
+          if (id === 'info') {
+            setInfoMessage(null)
+          } else {
+            setErrorMessage(null)
+          }
+        }}
+      />
     </div>
   )
 }

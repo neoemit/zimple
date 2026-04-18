@@ -56,6 +56,12 @@ export interface JobDetail {
   progress: ProgressEvent[]
 }
 
+export interface JobProgressDeltaResponse {
+  summary: JobSummary
+  progress: ProgressEvent[]
+  nextCursor: number
+}
+
 export interface RuntimeHealth {
   dockerInstalled: boolean
   dockerResponsive: boolean

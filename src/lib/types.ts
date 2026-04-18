@@ -1,4 +1,12 @@
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type BackendPlatform = 'http' | 'mock'
+export type ThemeMode = 'system' | 'light' | 'dark'
+
+export interface BackendCapabilities {
+  platform: BackendPlatform
+  outputActionLabel: string
+  supportsDirectoryPicker: boolean
+}
 
 export interface CrawlLimits {
   maxPages: number
@@ -54,6 +62,12 @@ export interface JobDetail {
   request: StartJobRequest
   logs: string[]
   progress: ProgressEvent[]
+}
+
+export interface JobProgressDeltaResponse {
+  summary: JobSummary
+  progress: ProgressEvent[]
+  nextCursor: number
 }
 
 export interface RuntimeHealth {
