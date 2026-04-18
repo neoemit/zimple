@@ -99,6 +99,8 @@ const deriveCrawlSnapshot = (
     } else {
       statusText = 'Crawling in progress...'
     }
+  } else if (summary.state === 'paused') {
+    statusText = 'Capture paused. Resume to continue.'
   } else if (summary.state === 'succeeded') {
     statusText = 'Capture completed successfully.'
   } else if (summary.state === 'failed') {

@@ -12,19 +12,31 @@ import {
   stopContainer,
   zimitAttemptTimeoutMs,
 } from './runtime.js'
+import type { ZimitRunOptions } from './runtime.js'
 import { loadSettings, saveSettings } from './settings-store.js'
+import { loadJobsState, saveJobsState } from './jobs-store.js'
+import type { StoredJobRecord } from './jobs-store.js'
 import { normalizeStartJobRequest, nowIso } from './validation.js'
 import type {
+  CancelJobResponse,
+  ClearQueueResponse,
   JobDetail,
   JobProgressDeltaResponse,
   JobSummary,
   JobState,
+  PauseJobResponse,
   ProgressEvent,
+  ResumeJobResponse,
   RuntimeHealth,
   Settings,
   StartJobRequest,
   WebApiConfig,
 } from './types.js'
+
+interface ResumeState {
+  tempDirectory: string | null
+  checkpointPath: string | null
+}
 
 interface JobRecord {
   summary: JobSummary
@@ -35,6 +47,8 @@ interface JobRecord {
   outputFilename: string
   containerName: string
   cancelRequested: boolean
+  pauseRequested: boolean
+  resumeState: ResumeState
   activeProcess: ChildProcess | null
 }
 
@@ -50,6 +64,7 @@ export interface RuntimeAdapter {
     containerName: string,
     onLog: (line: string) => void,
     onProcess: (child: ChildProcess) => void,
+    options?: ZimitRunOptions,
   ): Promise<{
     success: boolean
     errorMessage?: string
@@ -69,8 +84,41 @@ const defaultRuntimeAdapter: RuntimeAdapter = {
   sleepForRetry,
 }
 
+const MAX_PERSISTED_LOGS = 320
+const MAX_PERSISTED_PROGRESS = 640
+const PERSIST_DEBOUNCE_MS = 350
+const HEARTBEAT_INTERVAL_MS = 15_000
+const PAUSE_WAIT_TIMEOUT_MS = 12_000
+
+const tempDirectoryPattern = /Output to tempdir:\s*([^\s|]+)/i
+const checkpointPattern = /Saving crawl state to:\s*([^\s|]+)/i
+
 const isAbsolutePath = (value: string): boolean =>
   path.isAbsolute(value) || /^[A-Za-z]:\\/.test(value)
+
+const isPathWithin = (baseDirectory: string, targetPath: string): boolean => {
+  const relative = path.relative(baseDirectory, targetPath)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+const outputContainerPathToHostPath = (
+  outputDirectory: string,
+  containerPath: string,
+): string | null => {
+  if (!containerPath.startsWith('/output')) {
+    return null
+  }
+
+  const relative = containerPath.replace(/^\/output\/?/, '')
+  const normalized = relative.length > 0 ? relative.split('/').join(path.sep) : ''
+  const hostPath = path.resolve(outputDirectory, normalized)
+
+  if (!isPathWithin(outputDirectory, hostPath)) {
+    return null
+  }
+
+  return hostPath
+}
 
 const addProgressEvent = (
   job: JobRecord,
@@ -178,6 +226,11 @@ const updateJobState = (
   Object.assign(job.summary, updates || {})
 }
 
+const wait = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, milliseconds)
+  })
+
 export class JobManager {
   private readonly config: WebApiConfig
 
@@ -190,6 +243,10 @@ export class JobManager {
   private readonly queue: string[] = []
 
   private workerRunning = false
+
+  private persistTimer: NodeJS.Timeout | null = null
+
+  private persistChain: Promise<void> = Promise.resolve()
 
   private constructor(
     config: WebApiConfig,
@@ -206,7 +263,10 @@ export class JobManager {
     runtime: RuntimeAdapter = defaultRuntimeAdapter,
   ): Promise<JobManager> {
     const settings = await loadSettings(config)
-    return new JobManager(config, settings, runtime)
+    const manager = new JobManager(config, settings, runtime)
+    await manager.restorePersistedJobs()
+    manager.ensureWorker()
+    return manager
   }
 
   getSettings(): Settings {
@@ -272,9 +332,16 @@ export class JobManager {
       outputFilename,
       containerName,
       cancelRequested: false,
+      pauseRequested: false,
+      resumeState: {
+        tempDirectory: null,
+        checkpointPath: null,
+      },
       activeProcess: null,
     })
     this.queue.push(jobId)
+
+    await this.flushPersistNow()
     this.ensureWorker()
 
     return { jobId }
@@ -330,7 +397,7 @@ export class JobManager {
     }
   }
 
-  async cancelJob(jobId: string): Promise<{ cancelled: boolean }> {
+  async cancelJob(jobId: string): Promise<CancelJobResponse> {
     const queuedIndex = this.queue.findIndex((queuedId) => queuedId === jobId)
     if (queuedIndex >= 0) {
       this.queue.splice(queuedIndex, 1)
@@ -340,28 +407,181 @@ export class JobManager {
       }
 
       updateJobState(queuedJob, 'cancelled', { finishedAt: nowIso() })
-      addProgressEvent(queuedJob, 'cancelled', 'Job cancelled while queued')
+      this.recordProgress(queuedJob, 'cancelled', 'Job cancelled while queued', undefined, true)
+      await this.cleanupTemporaryDirectory(queuedJob)
+      await this.flushPersistNow()
       return { cancelled: true }
     }
 
-    const activeJob = this.jobs.get(jobId)
-    if (!activeJob || activeJob.summary.state !== 'running') {
+    const job = this.jobs.get(jobId)
+    if (!job) {
       return { cancelled: false }
     }
 
-    activeJob.cancelRequested = true
-    updateJobState(activeJob, 'cancelled', {
-      finishedAt: activeJob.summary.finishedAt || nowIso(),
-    })
-    addProgressEvent(activeJob, 'cancel', 'Cancellation requested. Stopping container...')
+    if (job.summary.state === 'paused') {
+      updateJobState(job, 'cancelled', { finishedAt: nowIso() })
+      this.recordProgress(job, 'cancelled', 'Paused job was cancelled')
+      await this.cleanupTemporaryDirectory(job)
+      await this.flushPersistNow()
+      return { cancelled: true }
+    }
 
-    const stopPromise = this.runtime.stopContainer(this.config, activeJob.containerName)
-    if (activeJob.activeProcess) {
-      activeJob.activeProcess.kill('SIGTERM')
+    if (job.summary.state !== 'running') {
+      return { cancelled: false }
+    }
+
+    job.cancelRequested = true
+    job.pauseRequested = false
+    updateJobState(job, 'cancelled', {
+      finishedAt: job.summary.finishedAt || nowIso(),
+    })
+    this.recordProgress(job, 'cancel', 'Cancellation requested. Stopping container...')
+
+    const stopPromise = this.runtime.stopContainer(this.config, job.containerName)
+    if (job.activeProcess) {
+      job.activeProcess.kill('SIGTERM')
     }
     await stopPromise.catch(() => undefined)
 
+    await this.flushPersistNow()
     return { cancelled: true }
+  }
+
+  async pauseJob(jobId: string): Promise<PauseJobResponse> {
+    const job = this.jobs.get(jobId)
+    if (!job) {
+      return {
+        paused: false,
+        message: `Unknown job id: ${jobId}`,
+      }
+    }
+
+    if (job.summary.state === 'paused') {
+      return {
+        paused: true,
+        message: 'Job is already paused.',
+      }
+    }
+
+    if (job.summary.state !== 'running') {
+      return {
+        paused: false,
+        message: 'Only running jobs can be paused.',
+      }
+    }
+
+    job.pauseRequested = true
+    job.cancelRequested = false
+    this.recordProgress(job, 'pause', 'Pause requested. Stopping container...')
+
+    const stopPromise = this.runtime.stopContainer(this.config, job.containerName)
+    if (job.activeProcess) {
+      job.activeProcess.kill('SIGTERM')
+    }
+    await stopPromise.catch(() => undefined)
+
+    const reached = await this.waitForState(jobId, ['paused', 'failed', 'cancelled'])
+    if (reached === 'paused') {
+      return { paused: true }
+    }
+
+    if (reached === 'failed') {
+      return {
+        paused: false,
+        message:
+          job.summary.errorMessage ||
+          'Pause failed because a resumable checkpoint could not be confirmed.',
+      }
+    }
+
+    if (reached === 'cancelled') {
+      return {
+        paused: false,
+        message: 'Pause request was interrupted because the job was cancelled.',
+      }
+    }
+
+    return {
+      paused: false,
+      message: 'Pause was requested but the runtime has not stopped yet. Refresh shortly.',
+    }
+  }
+
+  async resumeJob(jobId: string): Promise<ResumeJobResponse> {
+    const job = this.jobs.get(jobId)
+    if (!job) {
+      return {
+        resumed: false,
+        message: `Unknown job id: ${jobId}`,
+      }
+    }
+
+    if (job.summary.state !== 'paused') {
+      return {
+        resumed: false,
+        message: 'Only paused jobs can be resumed.',
+      }
+    }
+
+    const validation = await this.validateResumeCheckpoint(job)
+    if (!validation.ok) {
+      updateJobState(job, 'failed', {
+        finishedAt: nowIso(),
+        errorMessage: validation.message,
+      })
+      this.recordProgress(job, 'failed', validation.message, undefined, true)
+      await this.cleanupTemporaryDirectory(job)
+      await this.flushPersistNow()
+      return {
+        resumed: false,
+        message: validation.message,
+      }
+    }
+
+    if (!this.queue.includes(job.summary.id)) {
+      this.queue.push(job.summary.id)
+    }
+
+    job.pauseRequested = false
+    job.cancelRequested = false
+    updateJobState(job, 'queued', {
+      finishedAt: null,
+      errorMessage: null,
+    })
+    this.recordProgress(job, 'resume', 'Resume requested. Job queued from saved checkpoint.')
+
+    await this.flushPersistNow()
+    this.ensureWorker()
+
+    return { resumed: true }
+  }
+
+  clearQueue(): ClearQueueResponse {
+    let removed = 0
+    const removedIds = new Set<string>()
+
+    for (const [jobId, job] of this.jobs.entries()) {
+      if (job.summary.state === 'failed' || job.summary.state === 'cancelled') {
+        this.jobs.delete(jobId)
+        removedIds.add(jobId)
+        removed += 1
+
+        if (job.resumeState.tempDirectory) {
+          void fsp.rm(job.resumeState.tempDirectory, {
+            recursive: true,
+            force: true,
+          })
+        }
+      }
+    }
+
+    if (removedIds.size > 0) {
+      const remainingQueue = this.queue.filter((jobId) => !removedIds.has(jobId))
+      this.queue.splice(0, this.queue.length, ...remainingQueue)
+      void this.flushPersistNow()
+    }
+
+    return { removed }
   }
 
   getOutputPath(jobId: string): string | null {
@@ -385,6 +605,302 @@ export class JobManager {
     return this.runtime.checkRuntimeHealth(this.config)
   }
 
+  private async restorePersistedJobs(): Promise<void> {
+    const stored = await loadJobsState(this.config)
+    if (!stored) {
+      return
+    }
+
+    for (const storedJob of stored.jobs) {
+      const record = this.recordFromStored(storedJob)
+      this.jobs.set(record.summary.id, record)
+    }
+
+    const queuedSet = new Set<string>()
+    for (const jobId of stored.queue) {
+      const queuedJob = this.jobs.get(jobId)
+      if (!queuedJob || queuedSet.has(jobId)) {
+        continue
+      }
+      if (queuedJob.summary.state !== 'queued') {
+        continue
+      }
+
+      this.queue.push(jobId)
+      queuedSet.add(jobId)
+    }
+
+    for (const job of this.jobs.values()) {
+      if (job.summary.state === 'queued' && !queuedSet.has(job.summary.id)) {
+        this.queue.push(job.summary.id)
+        queuedSet.add(job.summary.id)
+      }
+    }
+
+    let changed = false
+
+    for (const job of this.jobs.values()) {
+      if (job.summary.state === 'running') {
+        if (await this.hasCheckpointFile(job)) {
+          updateJobState(job, 'paused', {
+            finishedAt: null,
+            errorMessage: null,
+          })
+          this.recordProgress(
+            job,
+            'paused',
+            'Service restart detected while running. Job restored as paused and can be resumed.',
+            undefined,
+            true,
+          )
+        } else {
+          const message =
+            'Service restart interrupted a running capture and no resumable checkpoint was found. Start a new job to retry.'
+          updateJobState(job, 'failed', {
+            finishedAt: nowIso(),
+            errorMessage: message,
+          })
+          this.recordProgress(job, 'failed', message, undefined, true)
+          await this.cleanupTemporaryDirectory(job)
+        }
+        changed = true
+      }
+
+      if (
+        (job.summary.state === 'succeeded' ||
+          job.summary.state === 'failed' ||
+          job.summary.state === 'cancelled') &&
+        job.resumeState.tempDirectory
+      ) {
+        await this.cleanupTemporaryDirectory(job)
+        changed = true
+      }
+    }
+
+    this.pruneQueue()
+
+    if (changed) {
+      await this.flushPersistNow()
+    }
+  }
+
+  private recordFromStored(stored: StoredJobRecord): JobRecord {
+    const containerName =
+      stored.containerName.trim().length > 0
+        ? stored.containerName
+        : this.runtime.containerNameForJob(stored.summary.id)
+
+    return {
+      summary: {
+        ...stored.summary,
+      },
+      request: {
+        ...stored.request,
+      },
+      logs: [...stored.logs],
+      progress: stored.progress.map((event) => ({ ...event })),
+      outputDirectory: stored.outputDirectory,
+      outputFilename: stored.outputFilename,
+      containerName,
+      cancelRequested: false,
+      pauseRequested: false,
+      resumeState: {
+        tempDirectory: stored.resumeState.tempDirectory,
+        checkpointPath: stored.resumeState.checkpointPath,
+      },
+      activeProcess: null,
+    }
+  }
+
+  private schedulePersist(): void {
+    if (this.persistTimer) {
+      return
+    }
+
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null
+      void this.persistNow()
+    }, PERSIST_DEBOUNCE_MS)
+  }
+
+  private async flushPersistNow(): Promise<void> {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer)
+      this.persistTimer = null
+    }
+
+    await this.persistNow()
+  }
+
+  private async persistNow(): Promise<void> {
+    const snapshotJobs = Array.from(this.jobs.values()).map((job) => ({
+      summary: { ...job.summary },
+      request: {
+        ...job.request,
+      },
+      logs: job.logs.slice(-MAX_PERSISTED_LOGS),
+      progress: job.progress.slice(-MAX_PERSISTED_PROGRESS).map((event) => ({ ...event })),
+      outputDirectory: job.outputDirectory,
+      outputFilename: job.outputFilename,
+      containerName: job.containerName,
+      resumeState: {
+        tempDirectory: job.resumeState.tempDirectory,
+        checkpointPath: job.resumeState.checkpointPath,
+      },
+    }))
+
+    const snapshotQueue = this.queue.filter((jobId, index) => {
+      if (this.queue.indexOf(jobId) !== index) {
+        return false
+      }
+      const job = this.jobs.get(jobId)
+      return Boolean(job && job.summary.state === 'queued')
+    })
+
+    this.persistChain = this.persistChain
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          await saveJobsState(this.config, {
+            queue: snapshotQueue,
+            jobs: snapshotJobs,
+          })
+        } catch (error) {
+          console.error('Failed to persist job state:', error)
+        }
+      })
+
+    await this.persistChain
+  }
+
+  private pruneQueue(): void {
+    const seen = new Set<string>()
+    const nextQueue = this.queue.filter((jobId) => {
+      if (seen.has(jobId)) {
+        return false
+      }
+      seen.add(jobId)
+
+      const job = this.jobs.get(jobId)
+      return Boolean(job && job.summary.state === 'queued')
+    })
+
+    this.queue.splice(0, this.queue.length, ...nextQueue)
+  }
+
+  private recordProgress(
+    job: JobRecord,
+    stage: string,
+    message: string,
+    attempt?: number,
+    persistImmediately = false,
+  ): void {
+    addProgressEvent(job, stage, message, attempt)
+    if (persistImmediately) {
+      void this.flushPersistNow()
+    } else {
+      this.schedulePersist()
+    }
+  }
+
+  private captureResumeMetadata(job: JobRecord, line: string): void {
+    const checkpointMatch = checkpointPattern.exec(line)
+    if (checkpointMatch?.[1]) {
+      const hostPath = outputContainerPathToHostPath(job.outputDirectory, checkpointMatch[1])
+      if (hostPath) {
+        job.resumeState.checkpointPath = hostPath
+      }
+    }
+
+    const tempDirectoryMatch = tempDirectoryPattern.exec(line)
+    if (tempDirectoryMatch?.[1]) {
+      const hostPath = outputContainerPathToHostPath(job.outputDirectory, tempDirectoryMatch[1])
+      if (hostPath) {
+        job.resumeState.tempDirectory = hostPath
+      }
+    }
+  }
+
+  private async hasCheckpointFile(job: JobRecord): Promise<boolean> {
+    const checkpointPath = job.resumeState.checkpointPath
+    if (!checkpointPath) {
+      return false
+    }
+
+    if (!isPathWithin(job.outputDirectory, checkpointPath)) {
+      return false
+    }
+
+    try {
+      const stat = await fsp.stat(checkpointPath)
+      return stat.isFile()
+    } catch {
+      return false
+    }
+  }
+
+  private async validateResumeCheckpoint(
+    job: JobRecord,
+  ): Promise<{ ok: true; configPath: string } | { ok: false; message: string }> {
+    const checkpointPath = job.resumeState.checkpointPath
+    if (!checkpointPath) {
+      return {
+        ok: false,
+        message:
+          'Resume is unavailable because no crawl checkpoint was recorded. Pause again after the crawler has emitted a saved state.',
+      }
+    }
+
+    if (!isPathWithin(job.outputDirectory, checkpointPath)) {
+      return {
+        ok: false,
+        message:
+          'Resume checkpoint is outside the configured output directory and cannot be trusted.',
+      }
+    }
+
+    try {
+      const stat = await fsp.stat(checkpointPath)
+      if (!stat.isFile()) {
+        return {
+          ok: false,
+          message: `Resume checkpoint is missing: ${checkpointPath}`,
+        }
+      }
+    } catch {
+      return {
+        ok: false,
+        message:
+          `Resume checkpoint was not found on disk: ${checkpointPath}. Keep paused temp data and retry, or start a new job.`,
+      }
+    }
+
+    return {
+      ok: true,
+      configPath: checkpointPath,
+    }
+  }
+
+  private async cleanupTemporaryDirectory(job: JobRecord): Promise<void> {
+    const tempDirectory = job.resumeState.tempDirectory
+    if (
+      !tempDirectory ||
+      !isPathWithin(job.outputDirectory, tempDirectory) ||
+      job.summary.state === 'paused'
+    ) {
+      return
+    }
+
+    await fsp.rm(tempDirectory, {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined)
+
+    job.resumeState.tempDirectory = null
+    job.resumeState.checkpointPath = null
+    this.schedulePersist()
+  }
+
   private ensureWorker(): void {
     if (this.workerRunning) {
       return
@@ -402,14 +918,15 @@ export class JobManager {
       }
 
       const job = this.jobs.get(jobId)
-      if (!job) {
+      if (!job || job.summary.state !== 'queued') {
         continue
       }
 
       updateJobState(job, 'running', {
         startedAt: job.summary.startedAt || nowIso(),
+        finishedAt: null,
       })
-      addProgressEvent(job, 'running', 'Job started')
+      this.recordProgress(job, 'running', 'Job started', undefined, true)
 
       try {
         await this.processJob(jobId)
@@ -418,9 +935,12 @@ export class JobManager {
           finishedAt: nowIso(),
           errorMessage: `Unexpected failure: ${(error as Error).message}`,
         })
-        addProgressEvent(job, 'failed', 'ZIM build failed')
+        this.recordProgress(job, 'failed', 'ZIM build failed', undefined, true)
+        await this.cleanupTemporaryDirectory(job)
       } finally {
         job.activeProcess = null
+        job.cancelRequested = false
+        job.pauseRequested = false
       }
     }
 
@@ -438,7 +958,7 @@ export class JobManager {
       job.outputFilename,
     )
     if (resolvedOutputFilename !== job.outputFilename) {
-      addProgressEvent(
+      this.recordProgress(
         job,
         'runtime',
         `Output file ${job.outputFilename}.zim already exists. Using ${resolvedOutputFilename}.zim for this run.`,
@@ -447,24 +967,24 @@ export class JobManager {
     }
 
     if (!job.request.crawl.respectRobots) {
-      addProgressEvent(
+      this.recordProgress(
         job,
         'runtime',
         'Robots override is not directly enforceable in zimit; crawler policy remains zimit-default.',
       )
     }
     if (job.request.crawl.limits.maxAssetSizeMb > 0) {
-      addProgressEvent(
+      this.recordProgress(
         job,
         'runtime',
         'Per-asset size cap is not directly enforceable in zimit; using total size hard limit.',
       )
     }
 
-    addProgressEvent(job, 'runtime', 'Checking zimit runtime image...')
+    this.recordProgress(job, 'runtime', 'Checking zimit runtime image...')
     try {
       const pulled = await this.runtime.ensureZimitImage(this.config, 20 * 60 * 1000)
-      addProgressEvent(
+      this.recordProgress(
         job,
         'runtime',
         pulled ? 'Runtime image prepared.' : 'Runtime image ready.',
@@ -474,14 +994,35 @@ export class JobManager {
         updateJobState(job, 'cancelled', {
           finishedAt: job.summary.finishedAt || nowIso(),
         })
-        addProgressEvent(job, 'cancelled', 'Job cancelled during runtime preparation')
+        this.recordProgress(job, 'cancelled', 'Job cancelled during runtime preparation')
+        await this.cleanupTemporaryDirectory(job)
+      } else if (job.pauseRequested) {
+        const paused = await this.hasCheckpointFile(job)
+        if (paused) {
+          updateJobState(job, 'paused', {
+            finishedAt: null,
+            errorMessage: null,
+          })
+          this.recordProgress(job, 'paused', 'Job paused. Resume when ready.')
+        } else {
+          const message =
+            'Pause request completed but no checkpoint was saved yet. Retry pause after progress events appear.'
+          updateJobState(job, 'failed', {
+            finishedAt: nowIso(),
+            errorMessage: message,
+          })
+          this.recordProgress(job, 'failed', message)
+          await this.cleanupTemporaryDirectory(job)
+        }
       } else {
         updateJobState(job, 'failed', {
           finishedAt: nowIso(),
           errorMessage: (error as Error).message,
         })
-        addProgressEvent(job, 'error', (error as Error).message)
+        this.recordProgress(job, 'error', (error as Error).message)
+        await this.cleanupTemporaryDirectory(job)
       }
+      await this.flushPersistNow()
       return
     }
 
@@ -492,16 +1033,52 @@ export class JobManager {
         updateJobState(job, 'cancelled', {
           finishedAt: job.summary.finishedAt || nowIso(),
         })
-        addProgressEvent(job, 'cancelled', 'Job cancelled before attempt', attempt)
+        this.recordProgress(job, 'cancelled', 'Job cancelled before attempt', attempt)
+        await this.cleanupTemporaryDirectory(job)
+        await this.flushPersistNow()
+        return
+      }
+
+      if (job.pauseRequested) {
+        const checkpointSaved = await this.hasCheckpointFile(job)
+        if (checkpointSaved) {
+          updateJobState(job, 'paused', {
+            finishedAt: null,
+            errorMessage: null,
+          })
+          this.recordProgress(job, 'paused', 'Job paused. Resume when ready.', attempt)
+        } else {
+          const message =
+            'Pause request completed but no checkpoint was confirmed. Retry pause after crawler state has been saved.'
+          updateJobState(job, 'failed', {
+            finishedAt: nowIso(),
+            errorMessage: message,
+          })
+          this.recordProgress(job, 'failed', message, attempt)
+          await this.cleanupTemporaryDirectory(job)
+        }
+        await this.flushPersistNow()
         return
       }
 
       job.summary.attempt = attempt
-      addProgressEvent(job, 'attempt', `Attempt ${attempt} of ${retries + 1} started`, attempt)
-      addProgressEvent(job, 'runtime', 'Launching zimit capture engine...', attempt)
+      this.recordProgress(job, 'attempt', `Attempt ${attempt} of ${retries + 1} started`, attempt)
+      this.recordProgress(job, 'runtime', 'Launching zimit capture engine...', attempt)
 
       const previousZims = listZimFiles(job.outputDirectory)
       const timeoutMs = zimitAttemptTimeoutMs(job.request.crawl.limits.timeoutMinutes)
+
+      const resumeValidation = await this.validateResumeCheckpoint(job)
+      if (!resumeValidation.ok && job.resumeState.checkpointPath) {
+        updateJobState(job, 'failed', {
+          finishedAt: nowIso(),
+          errorMessage: resumeValidation.message,
+        })
+        this.recordProgress(job, 'failed', resumeValidation.message, attempt)
+        await this.cleanupTemporaryDirectory(job)
+        await this.flushPersistNow()
+        return
+      }
 
       let heartbeatHandle: NodeJS.Timeout | null = null
       let timeoutHandle: NodeJS.Timeout | null = null
@@ -515,12 +1092,17 @@ export class JobManager {
           }
         | null = null
 
+      const runOptions: ZimitRunOptions = {
+        saveStateIntervalSeconds: 60,
+        resumeConfigPath: resumeValidation.ok ? resumeValidation.configPath : null,
+      }
+
       try {
         heartbeatHandle = setInterval(() => {
-          if (!job.cancelRequested) {
-            addProgressEvent(job, 'heartbeat', `Attempt ${attempt} still running...`, attempt)
+          if (!job.cancelRequested && !job.pauseRequested) {
+            this.recordProgress(job, 'heartbeat', `Attempt ${attempt} still running...`, attempt)
           }
-        }, 15_000)
+        }, HEARTBEAT_INTERVAL_MS)
 
         result = await Promise.race([
           this.runtime.runZimitOnce(
@@ -530,13 +1112,15 @@ export class JobManager {
             job.outputFilename,
             job.containerName,
             (line) => {
+              this.captureResumeMetadata(job, line)
               if (!job.cancelRequested) {
-                addProgressEvent(job, 'log', line, attempt)
+                this.recordProgress(job, 'log', line, attempt)
               }
             },
             (child) => {
               job.activeProcess = child
             },
+            runOptions,
           ),
           new Promise<null>((resolve) => {
             timeoutHandle = setTimeout(() => {
@@ -562,7 +1146,35 @@ export class JobManager {
         updateJobState(job, 'cancelled', {
           finishedAt: job.summary.finishedAt || nowIso(),
         })
-        addProgressEvent(job, 'cancelled', 'Job cancelled', attempt)
+        this.recordProgress(job, 'cancelled', 'Job cancelled', attempt)
+        await this.cleanupTemporaryDirectory(job)
+        await this.flushPersistNow()
+        return
+      }
+
+      if (job.pauseRequested) {
+        await this.runtime
+          .stopContainer(this.config, job.containerName)
+          .catch(() => undefined)
+
+        const checkpointSaved = await this.hasCheckpointFile(job)
+        if (checkpointSaved) {
+          updateJobState(job, 'paused', {
+            finishedAt: null,
+            errorMessage: null,
+          })
+          this.recordProgress(job, 'paused', 'Job paused. Resume when ready.', attempt)
+        } else {
+          const message =
+            'Pause request completed but no checkpoint was saved. Wait for crawl state logs and try again.'
+          updateJobState(job, 'failed', {
+            finishedAt: nowIso(),
+            errorMessage: message,
+          })
+          this.recordProgress(job, 'failed', message, attempt)
+          await this.cleanupTemporaryDirectory(job)
+        }
+        await this.flushPersistNow()
         return
       }
 
@@ -571,10 +1183,10 @@ export class JobManager {
           .stopContainer(this.config, job.containerName)
           .catch(() => undefined)
         const message = `Attempt ${attempt} timed out after ${job.request.crawl.limits.timeoutMinutes} minutes plus conversion headroom.`
-        addProgressEvent(job, 'timeout', message, attempt)
+        this.recordProgress(job, 'timeout', message, attempt)
 
         if (attempt <= retries) {
-          addProgressEvent(job, 'retry', 'Retrying after timeout', attempt)
+          this.recordProgress(job, 'retry', 'Retrying after timeout', attempt)
           await this.runtime.sleepForRetry(attempt)
           continue
         }
@@ -583,7 +1195,9 @@ export class JobManager {
           finishedAt: nowIso(),
           errorMessage: message,
         })
-        addProgressEvent(job, 'failed', 'ZIM build failed', attempt)
+        this.recordProgress(job, 'failed', 'ZIM build failed', attempt)
+        await this.cleanupTemporaryDirectory(job)
+        await this.flushPersistNow()
         return
       }
 
@@ -599,16 +1213,18 @@ export class JobManager {
             outputPath,
             errorMessage: null,
           })
-          addProgressEvent(job, 'completed', 'ZIM build completed', attempt)
-          addProgressEvent(job, 'output', `Generated output: ${outputPath}`, attempt)
+          this.recordProgress(job, 'completed', 'ZIM build completed', attempt)
+          this.recordProgress(job, 'output', `Generated output: ${outputPath}`, attempt)
+          await this.cleanupTemporaryDirectory(job)
+          await this.flushPersistNow()
           return
         }
 
         const missingOutput =
           'zimit completed without writing a .zim file into the output directory.'
-        addProgressEvent(job, 'error', missingOutput, attempt)
+        this.recordProgress(job, 'error', missingOutput, attempt)
         if (attempt <= retries) {
-          addProgressEvent(
+          this.recordProgress(
             job,
             'retry',
             `Attempt ${attempt} produced no output archive. Retrying...`,
@@ -622,7 +1238,9 @@ export class JobManager {
           finishedAt: nowIso(),
           errorMessage: missingOutput,
         })
-        addProgressEvent(job, 'failed', 'ZIM build failed', attempt)
+        this.recordProgress(job, 'failed', 'ZIM build failed', attempt)
+        await this.cleanupTemporaryDirectory(job)
+        await this.flushPersistNow()
         return
       }
 
@@ -631,17 +1249,19 @@ export class JobManager {
           finishedAt: nowIso(),
           errorMessage: result.errorMessage || 'zimit execution failed.',
         })
-        addProgressEvent(
+        this.recordProgress(
           job,
           'failed',
           `Non-retryable runtime failure${result.exitCode !== undefined ? ` (exit ${result.exitCode ?? 'signal'})` : ''}.`,
           attempt,
         )
+        await this.cleanupTemporaryDirectory(job)
+        await this.flushPersistNow()
         return
       }
 
       if (attempt <= retries) {
-        addProgressEvent(
+        this.recordProgress(
           job,
           'retry',
           `Attempt ${attempt} failed: ${result.errorMessage || 'unknown error'}. Retrying...`,
@@ -655,8 +1275,27 @@ export class JobManager {
         finishedAt: nowIso(),
         errorMessage: result.errorMessage || 'zimit execution failed.',
       })
-      addProgressEvent(job, 'failed', 'ZIM build failed', attempt)
+      this.recordProgress(job, 'failed', 'ZIM build failed', attempt)
+      await this.cleanupTemporaryDirectory(job)
+      await this.flushPersistNow()
       return
     }
+  }
+
+  private async waitForState(
+    jobId: string,
+    targets: JobState[],
+    timeoutMs = PAUSE_WAIT_TIMEOUT_MS,
+  ): Promise<JobState | null> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const state = this.jobs.get(jobId)?.summary.state
+      if (state && targets.includes(state)) {
+        return state
+      }
+      await wait(80)
+    }
+
+    return null
   }
 }

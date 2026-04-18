@@ -60,4 +60,64 @@ describe('HttpBackendClient', () => {
       'noopener,noreferrer',
     )
   })
+
+  it('calls clear-terminal endpoint for queue cleanup', async () => {
+    const client = new HttpBackendClient('http://127.0.0.1:8080')
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ removed: 4 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await client.clearQueue()
+    expect(response.removed).toBe(4)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/jobs/clear-terminal',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    )
+  })
+
+  it('calls pause endpoint for running jobs', async () => {
+    const client = new HttpBackendClient('http://127.0.0.1:8080')
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ paused: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await client.pauseJob('job-7')
+    expect(response.paused).toBe(true)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/jobs/job-7/pause',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    )
+  })
+
+  it('calls resume endpoint for paused jobs', async () => {
+    const client = new HttpBackendClient('http://127.0.0.1:8080')
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ resumed: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await client.resumeJob('job-8')
+    expect(response.resumed).toBe(true)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/api/jobs/job-8/resume',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    )
+  })
 })

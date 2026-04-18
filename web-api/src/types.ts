@@ -1,4 +1,4 @@
-export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type JobState = 'queued' | 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface CrawlLimits {
   maxPages: number
@@ -77,6 +77,20 @@ export interface Settings {
 
 export interface CancelJobResponse {
   cancelled: boolean
+}
+
+export interface PauseJobResponse {
+  paused: boolean
+  message?: string
+}
+
+export interface ResumeJobResponse {
+  resumed: boolean
+  message?: string
+}
+
+export interface ClearQueueResponse {
+  removed: number
 }
 
 export interface OpenOutputResponse {

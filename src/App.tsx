@@ -14,6 +14,10 @@ import {
   getBackendClient,
   type BackendClient,
 } from './lib/backend'
+import {
+  ensureCompletionNotificationPermission,
+  sendJobCompletionNotification,
+} from './lib/browserNotifications'
 import { defaultSettings } from './lib/defaults'
 import { summarizeErrorForToast } from './lib/errorPresentation'
 import { compareJobsByCreated } from './lib/presentation'
@@ -88,6 +92,7 @@ function App({ backend = getBackendClient() }: AppProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState<boolean>(false)
+  const [clearingQueue, setClearingQueue] = useState<boolean>(false)
   const [savingSettings, setSavingSettings] = useState<boolean>(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode)
   const [showCreateJobModal, setShowCreateJobModal] = useState<boolean>(false)
@@ -96,6 +101,7 @@ function App({ backend = getBackendClient() }: AppProps) {
   const [queueRailOpen, setQueueRailOpen] = useState<boolean>(false)
 
   const autoOpenedJobs = useRef(new Set<string>())
+  const completionNotifiedJobs = useRef(new Set<string>())
   const knownJobStates = useRef<Map<string, JobSummary['state']>>(new Map())
 
   const formatErrorMessage = useCallback((error: unknown): string => {
@@ -321,12 +327,25 @@ function App({ backend = getBackendClient() }: AppProps) {
         void backend.openOutput(job.id)
       }
 
+      if (
+        previousState &&
+        previousState !== job.state &&
+        !isTerminalState(previousState) &&
+        isTerminalState(job.state) &&
+        !completionNotifiedJobs.current.has(job.id)
+      ) {
+        completionNotifiedJobs.current.add(job.id)
+        void sendJobCompletionNotification(job)
+      }
+
       knownJobStates.current.set(job.id, job.state)
     }
 
     for (const knownId of knownJobStates.current.keys()) {
       if (!seenIds.has(knownId)) {
         knownJobStates.current.delete(knownId)
+        completionNotifiedJobs.current.delete(knownId)
+        autoOpenedJobs.current.delete(knownId)
       }
     }
   }, [backend, jobs, settings.autoOpenOnSuccess])
@@ -456,6 +475,7 @@ function App({ backend = getBackendClient() }: AppProps) {
     setErrorMessage(null)
     setInfoMessage(null)
     setSubmitting(true)
+    void ensureCompletionNotificationPermission()
 
     try {
       const response = await backend.startJob({
@@ -489,6 +509,44 @@ function App({ backend = getBackendClient() }: AppProps) {
       const response = await backend.cancelJob(jobId)
       if (!response.cancelled) {
         setInfoMessage('Job was already finished or unavailable.')
+      }
+      await refreshJobs()
+      if (selectedJobId === jobId) {
+        await refreshSelectedJob(jobId)
+      }
+    } catch (error) {
+      setErrorMessage(formatErrorMessage(error))
+    }
+  }
+
+  const onPauseJob = async (jobId: string): Promise<void> => {
+    try {
+      const response = await backend.pauseJob(jobId)
+      if (response.paused) {
+        setInfoMessage('Pause requested. Waiting for checkpoint confirmation...')
+      } else {
+        setErrorMessage(
+          response.message || 'Pause was not accepted for this job.',
+        )
+      }
+      await refreshJobs()
+      if (selectedJobId === jobId) {
+        await refreshSelectedJob(jobId)
+      }
+    } catch (error) {
+      setErrorMessage(formatErrorMessage(error))
+    }
+  }
+
+  const onResumeJob = async (jobId: string): Promise<void> => {
+    try {
+      const response = await backend.resumeJob(jobId)
+      if (response.resumed) {
+        setInfoMessage('Resume requested. Job re-queued.')
+      } else {
+        setErrorMessage(
+          response.message || 'Resume was not accepted for this job.',
+        )
       }
       await refreshJobs()
       if (selectedJobId === jobId) {
@@ -539,6 +597,28 @@ function App({ backend = getBackendClient() }: AppProps) {
       }
     } catch (error) {
       setErrorMessage(formatErrorMessage(error))
+    }
+  }
+
+  const onClearQueue = async (): Promise<void> => {
+    setErrorMessage(null)
+    setInfoMessage(null)
+    setClearingQueue(true)
+
+    try {
+      const response = await backend.clearQueue()
+      await refreshJobs()
+      if (response.removed > 0) {
+        setInfoMessage(
+          `Cleared ${response.removed} ${response.removed === 1 ? 'job' : 'jobs'} from queue.`,
+        )
+      } else {
+        setInfoMessage('No failed or cancelled jobs to clear.')
+      }
+    } catch (error) {
+      setErrorMessage(formatErrorMessage(error))
+    } finally {
+      setClearingQueue(false)
     }
   }
 
@@ -596,7 +676,6 @@ function App({ backend = getBackendClient() }: AppProps) {
         queuedJobCount={queuedJobCount}
         showQueueToggle={usesQueueOverlay}
         queueOpen={queueRailOpen}
-        onCreateJob={openCreateJobModal}
         onToggleQueue={() => setQueueRailOpen((current) => !current)}
         onOpenSettings={openAppSettingsModal}
       />
@@ -622,9 +701,13 @@ function App({ backend = getBackendClient() }: AppProps) {
               onCreateJob={openCreateJobModal}
               onSelectJob={handleSelectJob}
               onCancelJob={(jobId) => void onCancelJob(jobId)}
+              onPauseJob={(jobId) => void onPauseJob(jobId)}
+              onResumeJob={(jobId) => void onResumeJob(jobId)}
+              onClearQueue={() => void onClearQueue()}
               onOpenOutput={(jobId) => void onOpenOutput(jobId)}
               showCloseButton={usesQueueOverlay}
               onClose={() => setQueueRailOpen(false)}
+              clearingQueue={clearingQueue}
             />
           </div>
         )}
@@ -634,6 +717,8 @@ function App({ backend = getBackendClient() }: AppProps) {
             selectedJob={selectedJob}
             outputActionLabel={capabilities.outputActionLabel}
             onCancelJob={(jobId) => void onCancelJob(jobId)}
+            onPauseJob={(jobId) => void onPauseJob(jobId)}
+            onResumeJob={(jobId) => void onResumeJob(jobId)}
             onOpenOutput={(jobId) => void onOpenOutput(jobId)}
           />
         </div>

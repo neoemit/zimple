@@ -1,4 +1,4 @@
-import { FolderOpen, Plus, XCircle } from 'lucide-react'
+import { FolderOpen, Pause, Play, Plus, Trash2, XCircle } from 'lucide-react'
 import { formatTimestamp, statusLabel } from '../lib/presentation'
 import type { JobSummary } from '../lib/types'
 
@@ -9,9 +9,13 @@ interface QueuePaneProps {
   onCreateJob: () => void
   onSelectJob: (jobId: string) => void
   onCancelJob: (jobId: string) => void
+  onPauseJob: (jobId: string) => void
+  onResumeJob: (jobId: string) => void
+  onClearQueue: () => void
   onOpenOutput: (jobId: string) => void
   showCloseButton?: boolean
   onClose?: () => void
+  clearingQueue?: boolean
 }
 
 function QueuePane({
@@ -21,10 +25,18 @@ function QueuePane({
   onCreateJob,
   onSelectJob,
   onCancelJob,
+  onPauseJob,
+  onResumeJob,
+  onClearQueue,
   onOpenOutput,
   showCloseButton = false,
   onClose,
+  clearingQueue = false,
 }: QueuePaneProps) {
+  const clearableCount = jobs.filter(
+    (job) => job.state === 'failed' || job.state === 'cancelled',
+  ).length
+
   return (
     <section className="pane queue-pane" aria-label="job-queue">
       <div className="pane-header">
@@ -32,22 +44,35 @@ function QueuePane({
           <h2>Job Queue</h2>
           <p>{jobs.length} total job{jobs.length === 1 ? '' : 's'}</p>
         </div>
-        {showCloseButton && onClose && (
-          <button type="button" className="ghost mini-action" onClick={onClose}>
-            <XCircle size={15} />
-            Close
+        <div className="pane-header-actions">
+          <button type="button" className="mini-action" onClick={onCreateJob}>
+            <Plus size={15} />
+            Add Job
           </button>
-        )}
+          {clearableCount > 0 && (
+            <button
+              type="button"
+              className="ghost mini-action"
+              onClick={onClearQueue}
+              disabled={clearingQueue}
+            >
+              <Trash2 size={15} />
+              {clearingQueue ? 'Clearing...' : `Clear Queue (${clearableCount})`}
+            </button>
+          )}
+          {showCloseButton && onClose && (
+            <button type="button" className="ghost mini-action" onClick={onClose}>
+              <XCircle size={15} />
+              Close
+            </button>
+          )}
+        </div>
       </div>
 
       <ul className="queue-list">
         {jobs.length === 0 && (
           <li className="empty-state">
             <p>No jobs queued yet.</p>
-            <button type="button" onClick={onCreateJob}>
-              <Plus size={16} />
-              Add Your First Job
-            </button>
           </li>
         )}
 
@@ -70,7 +95,19 @@ function QueuePane({
             </button>
 
             <div className="row-actions">
-              {(job.state === 'queued' || job.state === 'running') && (
+              {job.state === 'running' && (
+                <button type="button" className="ghost mini-action" onClick={() => onPauseJob(job.id)}>
+                  <Pause size={15} />
+                  Pause
+                </button>
+              )}
+              {job.state === 'paused' && (
+                <button type="button" className="mini-action" onClick={() => onResumeJob(job.id)}>
+                  <Play size={15} />
+                  Resume
+                </button>
+              )}
+              {(job.state === 'queued' || job.state === 'running' || job.state === 'paused') && (
                 <button type="button" className="ghost mini-action" onClick={() => onCancelJob(job.id)}>
                   <XCircle size={15} />
                   Cancel

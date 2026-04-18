@@ -20,6 +20,11 @@ export interface DockerRunResult {
   exitCode?: number | null
 }
 
+export interface ZimitRunOptions {
+  resumeConfigPath?: string | null
+  saveStateIntervalSeconds?: number
+}
+
 const dockerEnv = (config: WebApiConfig): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = { ...process.env }
 
@@ -178,6 +183,25 @@ const dockerMountPath = (value: string): string => {
   return value
 }
 
+const hostPathToOutputContainerPath = (
+  hostPath: string,
+  outputDirectory: string,
+): string | null => {
+  const relativePath = path.relative(outputDirectory, hostPath)
+  if (
+    relativePath.length === 0 ||
+    relativePath === '.' ||
+    (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
+  ) {
+    const normalized =
+      relativePath.length === 0 || relativePath === '.'
+        ? ''
+        : relativePath.replace(/\\/g, '/')
+    return normalized.length > 0 ? `/output/${normalized}` : '/output'
+  }
+  return null
+}
+
 const makeDriverPath = (outputDirectory: string, containerName: string): string =>
   path.join(outputDirectory, `.zimple-driver-${containerName}.mjs`)
 
@@ -289,10 +313,15 @@ export const buildDockerArgs = (
   containerName: string,
   zimitImage: string,
   driverContainerPath?: string,
+  options?: ZimitRunOptions,
 ): string[] => {
   const includePatterns = effectiveIncludePatterns(request)
   const sizeHardLimitBytes = Math.max(request.crawl.limits.maxTotalSizeMb, 1) * 1024 * 1024
   const timeHardLimitSeconds = zimitTimeHardLimitSeconds(request.crawl.limits.timeoutMinutes)
+  const saveStateIntervalSeconds = Math.max(
+    Math.floor(options?.saveStateIntervalSeconds ?? 60),
+    10,
+  )
   const args = [
     'run',
     '--rm',
@@ -324,10 +353,25 @@ export const buildDockerArgs = (
     String(timeHardLimitSeconds),
     '--sizeHardLimit',
     String(sizeHardLimitBytes),
+    '--saveState',
+    'partial',
+    '--saveStateInterval',
+    String(saveStateIntervalSeconds),
+    '--keep',
   ]
 
   if (driverContainerPath) {
     args.push('--driver', driverContainerPath)
+  }
+
+  if (options?.resumeConfigPath) {
+    const resumeConfigContainerPath = hostPathToOutputContainerPath(
+      options.resumeConfigPath,
+      outputDirectory,
+    )
+    if (resumeConfigContainerPath) {
+      args.push('--config', resumeConfigContainerPath)
+    }
   }
 
   for (const pattern of includePatterns) {
@@ -445,6 +489,7 @@ export const runZimitOnce = async (
   containerName: string,
   onLog: (line: string) => void,
   onProcess: (child: ChildProcess) => void,
+  options?: ZimitRunOptions,
 ): Promise<DockerRunResult> => {
   await fs.mkdir(outputDirectory, { recursive: true })
 
@@ -458,6 +503,7 @@ export const runZimitOnce = async (
     containerName,
     config.zimitImage,
     `/output/${path.basename(driverPath)}`,
+    options,
   )
 
   const child = spawn('docker', args, {

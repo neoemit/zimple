@@ -107,6 +107,18 @@ export const createServer = async (config: WebApiConfig, options?: ServerOptions
     return manager.cancelJob(params.jobId)
   })
 
+  app.post('/api/jobs/:jobId/pause', async (request) => {
+    const params = request.params as { jobId: string }
+    return manager.pauseJob(params.jobId)
+  })
+
+  app.post('/api/jobs/:jobId/resume', async (request) => {
+    const params = request.params as { jobId: string }
+    return manager.resumeJob(params.jobId)
+  })
+
+  app.post('/api/jobs/clear-terminal', async () => manager.clearQueue())
+
   app.get('/api/jobs/:jobId/output', async (request, reply) => {
     const params = request.params as { jobId: string }
     const outputPath = manager.getOutputPath(params.jobId)

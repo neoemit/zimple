@@ -1,6 +1,7 @@
-import { FolderOpen, XCircle } from 'lucide-react'
+import { FolderOpen, Pause, Play, XCircle } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useCrawlSnapshot } from '../hooks/useCrawlSnapshot'
+import { useTimeoutInsight } from '../hooks/useTimeoutInsight'
 import { interpretError } from '../lib/errorPresentation'
 import { formatTimestamp, statusLabel } from '../lib/presentation'
 import type { JobDetail } from '../lib/types'
@@ -9,6 +10,8 @@ interface JobDetailPaneProps {
   selectedJob: JobDetail | null
   outputActionLabel: string
   onCancelJob: (jobId: string) => void
+  onPauseJob: (jobId: string) => void
+  onResumeJob: (jobId: string) => void
   onOpenOutput: (jobId: string) => void
 }
 
@@ -16,10 +19,13 @@ function JobDetailPane({
   selectedJob,
   outputActionLabel,
   onCancelJob,
+  onPauseJob,
+  onResumeJob,
   onOpenOutput,
 }: JobDetailPaneProps) {
   const [nowMs, setNowMs] = useState<number>(() => Date.now())
   const crawl = useCrawlSnapshot(selectedJob)
+  const timeoutInsight = useTimeoutInsight(selectedJob, nowMs)
   const interpretedError = selectedJob?.summary.errorMessage
     ? interpretError(selectedJob.summary.errorMessage)
     : null
@@ -29,7 +35,13 @@ function JobDetailPane({
       return []
     }
 
-    return selectedJob.logs.slice(-120)
+    return [...selectedJob.progress]
+      .filter((event) => event.stage !== 'heartbeat' && event.message.trim().length > 0)
+      .sort(
+        (left, right) =>
+          new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
+      )
+      .slice(0, 5)
   }, [selectedJob])
 
   const progressValue = crawl?.progress.value ?? 0
@@ -96,7 +108,29 @@ function JobDetailPane({
               <span className={`status-pill ${selectedJob.summary.state}`}>
                 {statusLabel(selectedJob.summary.state)}
               </span>
-              {(selectedJob.summary.state === 'queued' || selectedJob.summary.state === 'running') && (
+              {selectedJob.summary.state === 'running' && (
+                <button
+                  type="button"
+                  className="ghost mini-action"
+                  onClick={() => onPauseJob(selectedJob.summary.id)}
+                >
+                  <Pause size={15} />
+                  Pause
+                </button>
+              )}
+              {selectedJob.summary.state === 'paused' && (
+                <button
+                  type="button"
+                  className="mini-action"
+                  onClick={() => onResumeJob(selectedJob.summary.id)}
+                >
+                  <Play size={15} />
+                  Resume
+                </button>
+              )}
+              {(selectedJob.summary.state === 'queued' ||
+                selectedJob.summary.state === 'running' ||
+                selectedJob.summary.state === 'paused') && (
                 <button
                   type="button"
                   className="ghost mini-action"
@@ -188,6 +222,12 @@ function JobDetailPane({
                   {staleSeconds >= 25 ? ' Capture is still active; waiting for next crawler event.' : ''}
                 </p>
               )}
+              {timeoutInsight && (
+                <div className="timeout-insight" aria-live="polite">
+                  <p>{timeoutInsight.line1}</p>
+                  <p>{timeoutInsight.line2}</p>
+                </div>
+              )}
 
               <div className="stats-grid">
                 <p><span>Processed</span><strong>{crawl.snapshot.processed ?? '-'}</strong></p>
@@ -203,26 +243,6 @@ function JobDetailPane({
           )}
 
           <section className="logs-panel">
-            <details className="detail-collapsible">
-              <summary>Event Timeline</summary>
-              <div className="collapsible-body">
-                {selectedJob.progress.length === 0 && <p className="empty">No progress events yet.</p>}
-                {selectedJob.progress.length > 0 && (
-                  <ol className="timeline-list">
-                    {selectedJob.progress.slice(-40).map((event, index) => (
-                      <li key={`${event.timestamp}-${index}`}>
-                        <div className="timeline-meta">
-                          <span className="stage-chip">{event.stage}</span>
-                          <time dateTime={event.timestamp}>{formatTimestamp(event.timestamp)}</time>
-                        </div>
-                        <p>{event.message}</p>
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-            </details>
-
             <details
               className="detail-collapsible"
               open={selectedJob.summary.state === 'failed'}
@@ -232,8 +252,14 @@ function JobDetailPane({
                 {recentLogs.length === 0 && <p className="empty">No runtime logs yet.</p>}
                 {recentLogs.length > 0 && (
                   <ol className="log-list" role="log" aria-live="polite">
-                    {recentLogs.map((line, index) => (
-                      <li key={`${index}-${line}`}>{line}</li>
+                    {recentLogs.map((event, index) => (
+                      <li key={`${event.timestamp}-${event.stage}-${index}`}>
+                        <div className="log-meta">
+                          <span className="stage-chip">{event.stage}</span>
+                          <time dateTime={event.timestamp}>{formatTimestamp(event.timestamp)}</time>
+                        </div>
+                        <p>{event.message}</p>
+                      </li>
                     ))}
                   </ol>
                 )}

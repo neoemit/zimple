@@ -1,4 +1,4 @@
-import { Gauge, Layers3, PanelLeft, Plus, Rocket, Settings } from 'lucide-react'
+import { Gauge, Layers3, PanelLeft, Rocket, Settings } from 'lucide-react'
 import type { RuntimeHealth } from '../lib/types'
 
 interface AppHeaderProps {
@@ -7,7 +7,6 @@ interface AppHeaderProps {
   queuedJobCount: number
   showQueueToggle: boolean
   queueOpen: boolean
-  onCreateJob: () => void
   onToggleQueue: () => void
   onOpenSettings: () => void
 }
@@ -18,7 +17,6 @@ function AppHeader({
   queuedJobCount,
   showQueueToggle,
   queueOpen,
-  onCreateJob,
   onToggleQueue,
   onOpenSettings,
 }: AppHeaderProps) {
@@ -61,10 +59,6 @@ function AppHeader({
         <button type="button" className="ghost" onClick={onOpenSettings}>
           <Settings size={16} />
           Settings
-        </button>
-        <button type="button" onClick={onCreateJob}>
-          <Plus size={16} />
-          Add Job
         </button>
       </div>
     </header>

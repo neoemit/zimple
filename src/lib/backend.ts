@@ -2,11 +2,14 @@ import { defaultCrawlOptions, defaultSettings } from './defaults'
 import type {
   BackendCapabilities,
   CancelJobResponse,
+  ClearQueueResponse,
   JobDetail,
   JobProgressDeltaResponse,
   JobSummary,
   OpenOutputResponse,
+  PauseJobResponse,
   ProgressEvent,
+  ResumeJobResponse,
   RuntimeHealth,
   Settings,
   StartJobRequest,
@@ -19,6 +22,9 @@ export interface BackendClient {
   listJobs(): Promise<JobSummary[]>
   getJob(jobId: string): Promise<JobDetail>
   cancelJob(jobId: string): Promise<CancelJobResponse>
+  pauseJob(jobId: string): Promise<PauseJobResponse>
+  resumeJob(jobId: string): Promise<ResumeJobResponse>
+  clearQueue(): Promise<ClearQueueResponse>
   openOutput(jobId: string): Promise<OpenOutputResponse>
   getRuntimeHealth(): Promise<RuntimeHealth>
   getSettings(): Promise<Settings>
@@ -128,7 +134,7 @@ class MockBackendClient implements BackendClient {
 
     window.setTimeout(() => {
       const job = this.jobs.get(id)
-      if (!job) {
+      if (!job || job.summary.state !== 'queued') {
         return
       }
 
@@ -150,7 +156,7 @@ class MockBackendClient implements BackendClient {
 
       window.setTimeout(() => {
         const target = this.jobs.get(id)
-        if (!target || target.summary.state === 'cancelled') {
+        if (!target || target.summary.state !== 'running') {
           return
         }
 
@@ -204,6 +210,63 @@ class MockBackendClient implements BackendClient {
     job.logs.push('[mock] Cancelled by user')
     this.emitState({ ...job.summary })
     return { cancelled: true }
+  }
+
+  async pauseJob(jobId: string): Promise<PauseJobResponse> {
+    const job = this.jobs.get(jobId)
+    if (!job) {
+      return { paused: false, message: `Unknown job id: ${jobId}` }
+    }
+
+    if (job.summary.state !== 'running') {
+      return { paused: false, message: 'Only running jobs can be paused.' }
+    }
+
+    job.summary.state = 'paused'
+    job.logs.push('[mock] Paused by user')
+    this.emitState({ ...job.summary })
+    return { paused: true }
+  }
+
+  async resumeJob(jobId: string): Promise<ResumeJobResponse> {
+    const job = this.jobs.get(jobId)
+    if (!job) {
+      return { resumed: false, message: `Unknown job id: ${jobId}` }
+    }
+
+    if (job.summary.state !== 'paused') {
+      return { resumed: false, message: 'Only paused jobs can be resumed.' }
+    }
+
+    job.summary.state = 'queued'
+    job.logs.push('[mock] Resume requested')
+    this.emitState({ ...job.summary })
+
+    window.setTimeout(() => {
+      const target = this.jobs.get(jobId)
+      if (!target || target.summary.state !== 'queued') {
+        return
+      }
+
+      target.summary.state = 'running'
+      target.logs.push('[mock] Resumed processing')
+      this.emitState({ ...target.summary })
+    }, 200)
+
+    return { resumed: true }
+  }
+
+  async clearQueue(): Promise<ClearQueueResponse> {
+    let removed = 0
+
+    for (const [jobId, job] of this.jobs.entries()) {
+      if (job.summary.state === 'failed' || job.summary.state === 'cancelled') {
+        this.jobs.delete(jobId)
+        removed += 1
+      }
+    }
+
+    return { removed }
   }
 
   async openOutput(jobId: string): Promise<OpenOutputResponse> {
@@ -303,6 +366,24 @@ export class HttpBackendClient implements BackendClient {
 
   async cancelJob(jobId: string): Promise<CancelJobResponse> {
     return this.request<CancelJobResponse>(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: 'POST',
+    })
+  }
+
+  async pauseJob(jobId: string): Promise<PauseJobResponse> {
+    return this.request<PauseJobResponse>(`/api/jobs/${encodeURIComponent(jobId)}/pause`, {
+      method: 'POST',
+    })
+  }
+
+  async resumeJob(jobId: string): Promise<ResumeJobResponse> {
+    return this.request<ResumeJobResponse>(`/api/jobs/${encodeURIComponent(jobId)}/resume`, {
+      method: 'POST',
+    })
+  }
+
+  async clearQueue(): Promise<ClearQueueResponse> {
+    return this.request<ClearQueueResponse>('/api/jobs/clear-terminal', {
       method: 'POST',
     })
   }

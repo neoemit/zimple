@@ -110,6 +110,7 @@ ZIMPLE_OUTPUT_DIR=/home/you/zim-output
 - `GET /api/jobs/:jobId`
 - `GET /api/jobs/:jobId/progress?after=<cursor>&limit=<n>`
 - `POST /api/jobs/:jobId/cancel`
+- `POST /api/jobs/clear-terminal`
 - `GET /api/jobs/:jobId/output`
 - `GET /api/runtime-health`
 - `GET /api/settings`
