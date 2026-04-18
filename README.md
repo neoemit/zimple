@@ -148,6 +148,61 @@ Example:
 ZIMPLE_OUTPUT_DIR=/home/you/zim-output
 ```
 
+## Kiwix integration (auto-refresh when new ZIMs arrive)
+
+To make newly generated `.zim` files show up in Kiwix, point `ZIMPLE_OUTPUT_DIR` to the same host
+folder that Kiwix mounts, and restart Kiwix when files change.
+
+Example layout:
+
+- Zimple writes to host folder: `/data/zim`
+- Kiwix mounts the same host folder and serves `*.zim`
+- A watcher container restarts Kiwix when a file is created/updated/deleted
+
+Set in `.env` for Zimple:
+
+```env
+ZIMPLE_OUTPUT_DIR=/data/zim
+```
+
+Compose example for Kiwix + watcher:
+
+```yaml
+services:
+  kiwix-serve:
+    image: ghcr.io/kiwix/kiwix-serve:latest
+    container_name: kiwix_server
+    ports:
+      - "8080:8080"
+    command:
+      - "*.zim"
+    restart: unless-stopped
+    volumes:
+      - /data/zim:/data
+
+  watcher:
+    image: docker:cli
+    container_name: kiwix_watcher
+    restart: unless-stopped
+    volumes:
+      - /data/zim:/monitor
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: >
+      /bin/sh -c "
+      apk add --no-cache inotify-tools &&
+      echo 'Watching /monitor for changes...' &&
+      while inotifywait -r -e create,delete,moved_to,close_write /monitor; do
+        echo 'Change detected, restarting Kiwix...';
+        docker restart kiwix_server;
+      done"
+```
+
+Notes:
+
+- Zimple UI/API stays on port `8000`; Kiwix can stay on `8080`.
+- If using `ZIMPLE_STAGING_DIR`, completed ZIM files are copied into `ZIMPLE_OUTPUT_DIR`; watcher still detects them there.
+- `command: ["*.zim"]` makes Kiwix serve all ZIM files in `/data`.
+
 ## Environment contracts
 
 ### Frontend env
@@ -224,3 +279,7 @@ npm run build:web:api
   - Remove stale temp folders from failed runs in `ZIMPLE_OUTPUT_DIR` (for example `.tmp*`) if no longer needed.
 - **Web mode job cannot write output**
   - Confirm `ZIMPLE_OUTPUT_DIR` is absolute, exists on host, and is mounted with the same absolute path in compose.
+- **Kiwix does not show a newly created ZIM**
+  - Confirm Zimple and Kiwix share the same host folder (`ZIMPLE_OUTPUT_DIR` == Kiwix bind source).
+  - Ensure watcher container is running and can restart `kiwix_server` via Docker socket.
+  - Verify the file exists on host with `.zim` extension and Kiwix is serving with `*.zim`.
