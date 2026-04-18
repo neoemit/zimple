@@ -499,6 +499,13 @@
     font-size: 0.76rem;
   }
 
+  .progress-clarification {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.73rem;
+    line-height: 1.35;
+  }
+
   .progress-freshness {
     margin: 0;
     color: var(--text-muted);

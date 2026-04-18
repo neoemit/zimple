@@ -59,6 +59,15 @@ function JobDetailPane({
     Number.isFinite(lastProgressMs)
       ? Math.max(0, Math.floor((nowMs - lastProgressMs) / 1000))
       : null
+  const processedPages = crawl?.snapshot.processed ?? null
+  const totalPages = crawl?.snapshot.total ?? null
+  const hasCrawlCoverage = processedPages !== null && totalPages !== null && totalPages > 0
+  const crawlSuccessPercent = hasCrawlCoverage
+    ? Math.max(0, Math.min(100, Math.round((processedPages / totalPages) * 100)))
+    : null
+  const progressHeadline = crawl?.progress.indeterminate
+    ? 'Job: estimating...'
+    : `Job: ${progressValue}%`
 
   useEffect(() => {
     if (!selectedJob || selectedJob.summary.state !== 'running') {
@@ -185,10 +194,10 @@ function JobDetailPane({
               <div className="progress-top">
                 <h3>Crawl Progress</h3>
                 <div className="progress-emphasis" aria-live="polite">
-                  <strong>{crawl.progress.indeterminate ? 'Estimating...' : `${progressValue}%`}</strong>
+                  <strong>{progressHeadline}</strong>
                   <span>
-                    {crawl.snapshot.processed !== null && crawl.snapshot.total !== null
-                      ? `${crawl.snapshot.processed} / ${crawl.snapshot.total} pages`
+                    {processedPages !== null && totalPages !== null
+                      ? `${processedPages} / ${totalPages} pages`
                       : crawl.snapshot.statusText}
                   </span>
                 </div>
@@ -197,11 +206,11 @@ function JobDetailPane({
               <div
                 className="progress-track"
                 role="progressbar"
-                aria-label="Crawl completion"
+                aria-label="Job completion"
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={crawl.progress.value}
-                aria-valuetext={`${crawl.progress.value}% complete`}
+                aria-valuetext={`Job completion ${crawl.progress.value}%`}
               >
                 <span
                   className={`progress-fill ${crawl.progress.indeterminate ? 'indeterminate' : ''}`}
@@ -216,6 +225,18 @@ function JobDetailPane({
               </div>
 
               <p className="progress-status">{crawl.snapshot.statusText}</p>
+              {crawlSuccessPercent !== null && (
+                <p className="progress-clarification">
+                  Job completion: {progressValue}%. Crawl success: {crawlSuccessPercent}% (
+                  {processedPages} / {totalPages} pages).
+                  {selectedJob.summary.state === 'succeeded' &&
+                    processedPages !== null &&
+                    totalPages !== null &&
+                    processedPages < totalPages
+                    ? ' Job completion reaches 100% when capture and conversion finish, even if some pages fail.'
+                    : ''}
+                </p>
+              )}
               {staleSeconds !== null && (
                 <p className="progress-freshness">
                   Last update {formatStaleDuration(staleSeconds)} ago.
