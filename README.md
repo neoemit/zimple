@@ -12,7 +12,10 @@ This repository is now **web-only**:
 
 - Public `http://` and `https://` URLs only
 - Queue with one active job at a time
-- Job states: `queued`, `running`, `succeeded`, `failed`, `cancelled`
+- Job states: `queued`, `running`, `paused`, `succeeded`, `failed`, `cancelled`
+- Clear Queue removes `succeeded`, `failed`, and `cancelled` jobs, while keeping active jobs
+  (`queued`, `running`, `paused`)
+- Crawl progress UI separates job completion percent from crawl success ratio (`processed / total`)
 - Default crawl limits:
   - Workers: `4`
   - Max pages: `1500`
@@ -45,6 +48,12 @@ cp .env.example .env
 npm run docker:web:up
 ```
 
+Equivalent direct command (run from repo root):
+
+```bash
+docker compose -f docker-compose.web.yml --env-file .env up --build
+```
+
 4. Open:
 
 ```text
@@ -55,6 +64,12 @@ http://127.0.0.1:8000
 
 ```bash
 npm run docker:web:down
+```
+
+Equivalent direct command:
+
+```bash
+docker compose -f docker-compose.web.yml --env-file .env down
 ```
 
 ## Local development (without docker-compose)
@@ -76,6 +91,30 @@ Optional frontend-only mock mode:
 ```bash
 VITE_ZIMPLE_BACKEND=mock npm run dev
 ```
+
+## Crawl scope patterns
+
+Capture Settings supports crawl scope filtering with regex patterns:
+
+- `Include Patterns (one per line)` for URLs you want to allow
+- `Exclude Patterns (one per line)` for URLs you want to block
+
+Examples:
+
+```text
+Include
+^https?://example\.com/docs/.*
+^https?://example\.com/blog/(guides|tutorials)/.*
+```
+
+```text
+Exclude
+^https?://example\.com/(admin|login)
+[?&](utm_|sessionId=)
+```
+
+Pattern syntax reference:
+[Browsertrix Crawler scope docs](https://crawler.docs.browsertrix.com/user-guide/crawl-scope/)
 
 ## Output folder binding (Linux/macOS)
 
@@ -110,6 +149,8 @@ ZIMPLE_OUTPUT_DIR=/home/you/zim-output
 - `GET /api/jobs/:jobId`
 - `GET /api/jobs/:jobId/progress?after=<cursor>&limit=<n>`
 - `POST /api/jobs/:jobId/cancel`
+- `POST /api/jobs/:jobId/pause`
+- `POST /api/jobs/:jobId/resume`
 - `POST /api/jobs/clear-terminal`
 - `GET /api/jobs/:jobId/output`
 - `GET /api/runtime-health`
@@ -131,6 +172,11 @@ npm run build:web:api
 - **`failed to fetch` in UI**
   - Ensure the API is reachable at `VITE_ZIMPLE_API_BASE_URL`.
   - In docker-compose mode, confirm `zimple-web` is healthy and running.
+- **`no configuration file provided: not found` when running `docker compose`**
+  - This repo uses `docker-compose.web.yml` (not `docker-compose.yml`).
+  - Run from the repository root, or provide an absolute compose file path.
+  - Use:
+    - `docker compose -f docker-compose.web.yml --env-file .env up --build`
 - **`zimit container failed with exit code 3`**
   - Output filesystem utilization is too high for browsertrix/zimit safety checks.
   - Free space on the mounted output volume or move `ZIMPLE_OUTPUT_DIR` to a less utilized disk.
