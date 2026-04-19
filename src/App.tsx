@@ -30,6 +30,7 @@ import type {
   Settings,
   StartJobRequest,
   ThemeMode,
+  ThemePalette,
 } from './lib/types'
 
 interface AppProps {
@@ -37,6 +38,7 @@ interface AppProps {
 }
 
 const themeStorageKey = 'zimple.theme.mode'
+const themePaletteStorageKey = 'zimple.theme.palette'
 
 const isTerminalState = (state: JobSummary['state']): boolean =>
   state === 'succeeded' || state === 'failed' || state === 'cancelled'
@@ -80,6 +82,25 @@ const readThemeMode = (): ThemeMode => {
   return 'system'
 }
 
+const readThemePalette = (): ThemePalette => {
+  if (typeof window === 'undefined') {
+    return 'ocean'
+  }
+
+  const stored = window.localStorage.getItem(themePaletteStorageKey)
+  if (
+    stored === 'ocean' ||
+    stored === 'indigo' ||
+    stored === 'violet' ||
+    stored === 'rose' ||
+    stored === 'amber'
+  ) {
+    return stored
+  }
+
+  return 'ocean'
+}
+
 function App({ backend = getBackendClient() }: AppProps) {
   const [request, setRequest] = useState<StartJobRequest>(() =>
     createDefaultStartJobRequest(),
@@ -96,6 +117,7 @@ function App({ backend = getBackendClient() }: AppProps) {
   const [clearingQueue, setClearingQueue] = useState<boolean>(false)
   const [savingSettings, setSavingSettings] = useState<boolean>(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode)
+  const [themePalette, setThemePalette] = useState<ThemePalette>(readThemePalette)
   const [showCreateJobModal, setShowCreateJobModal] = useState<boolean>(false)
   const [showCaptureSettingsModal, setShowCaptureSettingsModal] = useState<boolean>(false)
   const [showAppSettingsModal, setShowAppSettingsModal] = useState<boolean>(false)
@@ -378,11 +400,20 @@ function App({ backend = getBackendClient() }: AppProps) {
       return
     }
 
+    window.localStorage.setItem(themePaletteStorageKey, themePalette)
+  }, [themePalette])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
     const root = document.documentElement
 
     if (typeof window.matchMedia !== 'function') {
       root.dataset.theme = themeMode === 'dark' ? 'dark' : 'light'
       root.dataset.themeMode = themeMode
+      root.dataset.themePalette = themePalette
       return
     }
 
@@ -397,6 +428,7 @@ function App({ backend = getBackendClient() }: AppProps) {
           : themeMode
       root.dataset.theme = effectiveTheme
       root.dataset.themeMode = themeMode
+      root.dataset.themePalette = themePalette
     }
 
     applyTheme()
@@ -416,7 +448,7 @@ function App({ backend = getBackendClient() }: AppProps) {
 
     mediaQuery.addListener(onSchemeChange)
     return () => mediaQuery.removeListener(onSchemeChange)
-  }, [themeMode])
+  }, [themeMode, themePalette])
 
   useEffect(() => {
     if (!hasOpenModal) {
@@ -750,11 +782,13 @@ function App({ backend = getBackendClient() }: AppProps) {
           settings={settings}
           settingsDraft={settingsDraft}
           themeMode={themeMode}
+          themePalette={themePalette}
           savingSettings={savingSettings}
           supportsDirectoryPicker={capabilities.supportsDirectoryPicker}
           setSettings={setSettings}
           setSettingsDraft={setSettingsDraft}
           setThemeMode={setThemeMode}
+          setThemePalette={setThemePalette}
           onSaveSettings={onSaveSettings}
           onBrowseDirectory={onBrowseDirectory}
           onClose={() => setShowAppSettingsModal(false)}
