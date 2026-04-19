@@ -1,16 +1,18 @@
 import { CheckCircle, FolderOpen, Loader2, Save, X } from 'lucide-react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { Settings, ThemeMode } from '../lib/types'
+import type { Settings, ThemeMode, ThemePalette } from '../lib/types'
 
 interface AppSettingsModalProps {
   settings: Settings
   settingsDraft: string
   themeMode: ThemeMode
+  themePalette: ThemePalette
   savingSettings: boolean
   supportsDirectoryPicker: boolean
   setSettings: Dispatch<SetStateAction<Settings>>
   setSettingsDraft: (value: string) => void
   setThemeMode: (mode: ThemeMode) => void
+  setThemePalette: (palette: ThemePalette) => void
   onSaveSettings: () => Promise<void>
   onBrowseDirectory: () => Promise<void>
   onClose: () => void
@@ -20,11 +22,13 @@ function AppSettingsModal({
   settings,
   settingsDraft,
   themeMode,
+  themePalette,
   savingSettings,
   supportsDirectoryPicker,
   setSettings,
   setSettingsDraft,
   setThemeMode,
+  setThemePalette,
   onSaveSettings,
   onBrowseDirectory,
   onClose,
@@ -96,6 +100,21 @@ function AppSettingsModal({
               <option value="system">System (Default)</option>
               <option value="light">Light</option>
               <option value="dark">Dark</option>
+            </select>
+          </label>
+
+          <label>
+            Theme Accent
+            <select
+              aria-label="theme-palette"
+              value={themePalette}
+              onChange={(event) => setThemePalette(event.target.value as ThemePalette)}
+            >
+              <option value="ocean">Ocean (Default)</option>
+              <option value="indigo">Indigo</option>
+              <option value="violet">Violet</option>
+              <option value="rose">Rose</option>
+              <option value="amber">Amber</option>
             </select>
           </label>
 

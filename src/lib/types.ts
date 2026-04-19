@@ -1,6 +1,7 @@
 export type JobState = 'queued' | 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled'
 export type BackendPlatform = 'http' | 'mock'
 export type ThemeMode = 'system' | 'light' | 'dark'
+export type ThemePalette = 'ocean' | 'indigo' | 'violet' | 'rose' | 'amber'
 
 export interface BackendCapabilities {
   platform: BackendPlatform

@@ -1,7 +1,7 @@
 {
   "name": "zimple",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Web app that turns websites into Kiwix-compatible ZIM files",
   "type": "module",
   "scripts": {
