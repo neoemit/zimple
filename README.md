@@ -59,7 +59,7 @@ npm run docker:web:up
 Equivalent direct command (run from repo root):
 
 ```bash
-docker compose -f docker-compose.web.yml --env-file .env up --build
+docker compose up --build
 ```
 
 4. Open:
@@ -77,7 +77,7 @@ npm run docker:web:down
 Equivalent direct command:
 
 ```bash
-docker compose -f docker-compose.web.yml --env-file .env down
+docker compose down
 ```
 
 ## Local development (without docker-compose)
@@ -136,7 +136,7 @@ These map to ZIM metadata and improve Kiwix listing display.
 
 ## Output folder binding (Linux/macOS)
 
-When running with `docker-compose.web.yml`, set `ZIMPLE_OUTPUT_DIR` to the absolute host folder you want. The compose file mounts that same path into the container so nested `docker run` calls can write outputs correctly.
+When running with `docker-compose.yml`, set `ZIMPLE_OUTPUT_DIR` to the absolute host folder you want. The compose file mounts that same path into the container so nested `docker run` calls can write outputs correctly.
 
 If `ZIMPLE_OUTPUT_DIR` points to CIFS/NFS, use `ZIMPLE_STAGING_DIR` on a local disk so
 Browsertrix can crawl using local profile/temp data and then copy completed `.zim` files to
@@ -255,15 +255,15 @@ npm run build:web:api
   - Ensure the API is reachable at `VITE_ZIMPLE_API_BASE_URL`.
   - In docker-compose mode, confirm `zimple-web` is healthy and running.
 - **`no configuration file provided: not found` when running `docker compose`**
-  - This repo uses `docker-compose.web.yml` (not `docker-compose.yml`).
+  - This repo uses `docker-compose.yml`.
   - Run from the repository root, or provide an absolute compose file path.
   - Use:
-    - `docker compose -f docker-compose.web.yml --env-file .env up --build`
+    - `docker compose up --build`
 - **`502 Bad Gateway (openresty)` from Nginx Proxy Manager**
   - If upstream is `192.168.x.x:8000`, ensure Zimple publishes on LAN:
     - Set `ZIMPLE_PUBLISH_HOST=0.0.0.0` in `.env`
     - Restart:
-      - `docker compose -f docker-compose.web.yml --env-file .env up -d --build`
+      - `docker compose up -d --build`
   - Verify on server:
     - `curl -I http://127.0.0.1:8000/api/runtime-health`
     - `curl -I http://<server-lan-ip>:8000/api/runtime-health`
@@ -275,7 +275,7 @@ npm run build:web:api
   - Use local staging:
     - Set `ZIMPLE_STAGING_DIR` to a local disk path (example `/var/tmp/zimple-staging`)
     - Restart:
-      - `docker compose -f docker-compose.web.yml --env-file .env up -d --build`
+      - `docker compose up -d --build`
   - Remove stale temp folders from failed runs in `ZIMPLE_OUTPUT_DIR` (for example `.tmp*`) if no longer needed.
 - **Web mode job cannot write output**
   - Confirm `ZIMPLE_OUTPUT_DIR` is absolute, exists on host, and is mounted with the same absolute path in compose.
