@@ -1156,40 +1156,51 @@ export class JobManager {
   }
 
   private async workerLoop(): Promise<void> {
-    while (this.queue.length > 0) {
-      const jobId = this.queue.shift()
-      if (!jobId) {
-        continue
+    try {
+      while (this.queue.length > 0) {
+        const jobId = this.queue.shift()
+        if (!jobId) {
+          continue
+        }
+
+        const job = this.jobs.get(jobId)
+        if (!job || job.summary.state !== 'queued') {
+          continue
+        }
+
+        try {
+          updateJobState(job, 'running', {
+            startedAt: job.summary.startedAt || nowIso(),
+            finishedAt: null,
+          })
+          this.recordProgress(job, 'running', 'Job started', undefined, true)
+
+          await this.processJob(jobId)
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : `Unexpected failure: ${String(error)}`
+
+          updateJobState(job, 'failed', {
+            finishedAt: nowIso(),
+            errorMessage: `Unexpected failure: ${message}`,
+          })
+          this.recordProgress(job, 'failed', 'ZIM build failed', undefined, true)
+          await this.cleanupTemporaryDirectory(job)
+          console.error('Worker loop job failed unexpectedly:', error)
+        } finally {
+          job.activeProcess = null
+          job.cancelRequested = false
+          job.pauseRequested = false
+        }
       }
-
-      const job = this.jobs.get(jobId)
-      if (!job || job.summary.state !== 'queued') {
-        continue
-      }
-
-      updateJobState(job, 'running', {
-        startedAt: job.summary.startedAt || nowIso(),
-        finishedAt: null,
-      })
-      this.recordProgress(job, 'running', 'Job started', undefined, true)
-
-      try {
-        await this.processJob(jobId)
-      } catch (error) {
-        updateJobState(job, 'failed', {
-          finishedAt: nowIso(),
-          errorMessage: `Unexpected failure: ${(error as Error).message}`,
-        })
-        this.recordProgress(job, 'failed', 'ZIM build failed', undefined, true)
-        await this.cleanupTemporaryDirectory(job)
-      } finally {
-        job.activeProcess = null
-        job.cancelRequested = false
-        job.pauseRequested = false
+    } catch (error) {
+      console.error('Worker loop crashed unexpectedly:', error)
+    } finally {
+      this.workerRunning = false
+      if (this.queue.length > 0) {
+        this.ensureWorker()
       }
     }
-
-    this.workerRunning = false
   }
 
   private async processJob(jobId: string): Promise<void> {
