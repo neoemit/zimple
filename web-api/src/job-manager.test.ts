@@ -711,9 +711,14 @@ describe('JobManager queue behavior', () => {
     const manager = await JobManager.create(makeConfig(outputDir, dataDir), runtime)
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
-    const originalRecordProgress = (manager as any).recordProgress.bind(manager)
+    type ManagerWithRecordProgress = JobManager & {
+      recordProgress: (...args: unknown[]) => unknown
+    }
+    const managerWithRecordProgress = manager as unknown as ManagerWithRecordProgress
+
+    const originalRecordProgress = managerWithRecordProgress.recordProgress.bind(manager)
     let injectFailure = true
-    ;(manager as any).recordProgress = (...args: unknown[]) => {
+    managerWithRecordProgress.recordProgress = (...args: unknown[]) => {
       const stage = args[1]
       if (injectFailure && stage === 'running') {
         injectFailure = false
