@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { JobManager } from './job-manager.js'
 import type { RuntimeAdapter } from './job-manager.js'
 import type { StartJobRequest, WebApiConfig } from './types.js'
@@ -608,11 +608,11 @@ describe('JobManager queue behavior', () => {
   })
 
   it('clearQueue removes succeeded/failed/cancelled while keeping queued/running', async () => {
-    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-clear-'))
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-jobs-'))
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-data-'))
 
-    let slowGate: Promise<void> | null = null
     let releaseSlow: (() => void) | null = null
+    let slowGate: Promise<void> | null = null
 
     const runtime: RuntimeAdapter = {
       checkRuntimeHealth: async () => ({
@@ -682,6 +682,59 @@ describe('JobManager queue behavior', () => {
       expect(await waitForTerminalState(manager, running.jobId)).toBe('succeeded')
     }
 
+    await fs.rm(outputDir, { recursive: true, force: true })
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('continues processing queued jobs when an unexpected worker-loop error occurs', async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-jobs-'))
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'zimple-web-data-'))
+
+    const runtime: RuntimeAdapter = {
+      checkRuntimeHealth: async () => ({
+        dockerInstalled: true,
+        dockerResponsive: true,
+        zimitImagePresent: true,
+        ready: true,
+        message: 'ok',
+      }),
+      containerNameForJob: (jobId) => `zimple-${jobId.slice(0, 12)}`,
+      ensureZimitImage: async () => false,
+      runZimitOnce: async (_config, _request, runtimeOutputDirectory, outputFilename) => {
+        await fs.writeFile(path.join(runtimeOutputDirectory, `${outputFilename}.zim`), 'zim')
+        return { success: true }
+      },
+      stopContainer: async () => true,
+      sleepForRetry: async () => undefined,
+    }
+
+    const manager = await JobManager.create(makeConfig(outputDir, dataDir), runtime)
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    type ManagerWithRecordProgress = JobManager & {
+      recordProgress: (...args: unknown[]) => unknown
+    }
+    const managerWithRecordProgress = manager as unknown as ManagerWithRecordProgress
+
+    const originalRecordProgress = managerWithRecordProgress.recordProgress.bind(manager)
+    let injectFailure = true
+    managerWithRecordProgress.recordProgress = (...args: unknown[]) => {
+      const stage = args[1]
+      if (injectFailure && stage === 'running') {
+        injectFailure = false
+        throw new Error('synthetic worker-loop failure')
+      }
+      return originalRecordProgress(...args)
+    }
+
+    const first = await manager.startJob(makeRequest(outputDir, 'https://example.com/first'))
+    const second = await manager.startJob(makeRequest(outputDir, 'https://example.com/second'))
+
+    expect(await waitForTerminalState(manager, first.jobId)).toBe('failed')
+    expect(await waitForTerminalState(manager, second.jobId)).toBe('succeeded')
+    expect(errorSpy).toHaveBeenCalled()
+
+    errorSpy.mockRestore()
     await fs.rm(outputDir, { recursive: true, force: true })
     await fs.rm(dataDir, { recursive: true, force: true })
   })
